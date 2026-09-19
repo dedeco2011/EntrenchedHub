@@ -51,7 +51,7 @@ do
     end
 
     E.G       = G          -- the executor's shared environment, captured once
-    E.version = "2.2.0"
+    E.version = "2.2.1"
     E.alive   = true
     E.faults  = {}
     E.cap     = {}
@@ -3751,10 +3751,18 @@ do
 
     ------------------------------------------------------------------------
     -- Clear view: haze, distance blur, weather particles and the grey out when
-    -- hurt. The weather system keeps changing these, so they are re-asserted on
-    -- a short loop, and every original is restored the moment it turns off.
+    -- hurt.
+    --
+    -- The damage tint is a ColorCorrectionEffect called `healthColor`, which
+    -- the game TWEENS every frame while HP is low (dropping Saturation toward
+    -- negative and warming TintColor). A 0.5s force-loop cannot outrun a per
+    -- frame tween, which is why it flashed through. So instead of just
+    -- writing 0 every half second, this listens to the property changes and
+    -- disables the effect entirely, then snaps any re-enable back on the same
+    -- frame. Enabled=false stops every tween from showing.
     ------------------------------------------------------------------------
     local saved = {}           -- instance -> { prop -> original }
+    local liveConns = {}       -- instance -> { RBXScriptConnection... }, torn down on off
     -- We only ever write `value`, so any other value found here is the game's
     -- latest intent (a new map sets its own fog and haze) and becomes the
     -- original that unload restores.
@@ -3763,17 +3771,42 @@ do
         local cur = inst[prop]
         if cur ~= value then
             saved[inst] = saved[inst] or {}
-            saved[inst][prop] = cur
+            if saved[inst][prop] == nil then saved[inst][prop] = cur end
             pcall(function() inst[prop] = value end)
         end
     end
+
+    local function bind(inst, prop, want)
+        liveConns[inst] = liveConns[inst] or {}
+        local ok, conn = pcall(function()
+            return inst:GetPropertyChangedSignal(prop):Connect(function()
+                if not cfg.world.clearWeather then return end
+                if inst[prop] ~= want then
+                    pcall(function() inst[prop] = want end)
+                end
+            end)
+        end)
+        if ok and conn then table.insert(liveConns[inst], conn) end
+    end
+
     -- instances from a finished map are dropped rather than held forever
     local function prune()
         for inst in pairs(saved) do
-            if not inst.Parent then saved[inst] = nil end
+            if not inst.Parent then
+                saved[inst] = nil
+                if liveConns[inst] then
+                    for _, c in ipairs(liveConns[inst]) do pcall(function() c:Disconnect() end) end
+                    liveConns[inst] = nil
+                end
+            end
         end
     end
+
     local function restoreAll()
+        for inst, conns in pairs(liveConns) do
+            for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+        end
+        table.clear(liveConns)
         for inst, props in pairs(saved) do
             if inst.Parent then
                 for prop, v in pairs(props) do pcall(function() inst[prop] = v end) end
@@ -3782,23 +3815,45 @@ do
         table.clear(saved)
     end
 
+    local function isDamageEffect(c)
+        if not c:IsA("ColorCorrectionEffect") then return false end
+        local n = c.Name
+        return n == "healthColor" or n == "damageColor" or n == "lowHealth"
+    end
+
+    local seen = {}    -- instance -> true, so per-instance bindings run once
+    local function handleChild(c)
+        if seen[c] then return end
+        if c:IsA("Atmosphere") then
+            force(c, "Density", 0)
+            force(c, "Haze", 0)
+            bind(c, "Density", 0)
+            bind(c, "Haze", 0)
+        elseif c:IsA("DepthOfFieldEffect") then
+            force(c, "Enabled", false)
+            bind(c, "Enabled", false)
+        elseif isDamageEffect(c) then
+            -- freeze the whole effect. A per-frame Saturation tween can win a
+            -- write race but not against Enabled=false, which the game's own
+            -- tween code does not re-enable.
+            force(c, "Enabled", false)
+            force(c, "Saturation", 0)
+            force(c, "TintColor", Color3.new(1, 1, 1))
+            bind(c, "Enabled", false)
+            bind(c, "Saturation", 0)
+            bind(c, "TintColor", Color3.new(1, 1, 1))
+        else
+            return
+        end
+        seen[c] = true
+    end
+
     local function apply()
         prune()
-        for _, c in ipairs(Lighting:GetChildren()) do
-            if c:IsA("Atmosphere") then
-                force(c, "Density", 0)
-                force(c, "Haze", 0)
-            elseif c:IsA("DepthOfFieldEffect") then
-                force(c, "Enabled", false)
-            elseif c:IsA("ColorCorrectionEffect") and c.Name == "healthColor" then
-                force(c, "Saturation", 0)
-                force(c, "TintColor", Color3.new(1, 1, 1))
-            end
-        end
+        for _, c in ipairs(Lighting:GetChildren()) do handleChild(c) end
         if Lighting.FogEnd < 100000 then
             force(Lighting, "FogEnd", 100000)
         elseif Lighting.FogEnd ~= 100000 and saved[Lighting] then
-            -- the map itself cleared the fog; nothing of ours to restore
             saved[Lighting].FogEnd = nil
         end
         for _, c in ipairs(workspace:GetChildren()) do
@@ -3810,6 +3865,16 @@ do
         end
     end
 
+    -- catch effects created AFTER we turned on (a new map, or a respawn that
+    -- rebuilds healthColor). Runs on the same frame the instance appears.
+    local addedConn
+    local function armAdded()
+        if addedConn then pcall(function() addedConn:Disconnect() end) end
+        addedConn = Lighting.ChildAdded:Connect(function(c)
+            if cfg.world.clearWeather then handleChild(c) end
+        end)
+    end
+
     -- each enable starts a new generation; an older loop sees the mismatch and
     -- exits, so rapid toggling can never leave two loops running
     local generation = 0
@@ -3817,9 +3882,12 @@ do
         generation = generation + 1
         local mine = generation
         if not on then
+            table.clear(seen)
+            if addedConn then pcall(function() addedConn:Disconnect() end) addedConn = nil end
             restoreAll()
             return
         end
+        armAdded()
         task.spawn(function()
             while E.alive and mine == generation and cfg.world.clearWeather do
                 local ok, err = pcall(apply)
@@ -3829,7 +3897,11 @@ do
         end)
     end
     E.watch("world.clearWeather", setClear)
-    E.onUnload(restoreAll)
+    E.onUnload(function()
+        if addedConn then pcall(function() addedConn:Disconnect() end) addedConn = nil end
+        table.clear(seen)
+        restoreAll()
+    end)
 end
 
 -- ==== en_14_exp_weapon.lua ====
