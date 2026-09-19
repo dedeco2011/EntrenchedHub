@@ -50,7 +50,8 @@ do
         G.__ENTRENCHED_HUB = nil
     end
 
-    E.version = "2.0.0"
+    E.G       = G          -- the executor's shared environment, captured once
+    E.version = "2.2.0"
     E.alive   = true
     E.faults  = {}
     E.cap     = {}
@@ -81,6 +82,8 @@ do
         "hookfunction", "restorefunction", "getconnections", "getgc", "islclosure",
         "gethui", "writefile", "readfile", "isfile", "isfolder", "makefolder",
         "delfile", "getcustomasset", "cloneref",
+        "hookmetamethod", "newcclosure", "getnamecallmethod", "checkcaller",
+        "fireproximityprompt", "request",
     }) do
         local ok, v = pcall(function() return G[name] end)
         if ok and type(v) == "function" then X[name] = v end
@@ -203,28 +206,33 @@ do
 
     -- Every key here has a control in the panel. Nothing outside this table is
     -- ever read back from disk, so a stale file cannot quietly change behaviour.
+    --
+    -- Defaults are the user's own tuned set as of v2.2, baked in so a fresh
+    -- install lands on a working, opinionated configuration. Anyone can retune
+    -- per key in the panel; the file only stores what has been changed.
     E.DEFAULTS = {
         aim = {
             silent    = true,
             part      = "Head",       -- Head | Torso | Closest
-            fov       = 25,           -- degrees
-            maxDist   = 2000,
+            fov       = 30,           -- degrees
+            maxDist   = 3000,
             visible   = true,         -- require a clear line from the camera
             predict   = true,
             priority  = "Crosshair",  -- Crosshair | Distance | Health
-            sticky    = true,
+            sticky    = false,
             hitChance = 100,          -- percent of shots redirected
             showFov   = true,
         },
         cam = {
             enabled = false,
             hold    = true,           -- only while right mouse is held
-            smooth  = 0.35,
+            smooth  = 0.45,
         },
         fire = {
-            rapid      = true,        -- keep firing while the button is held
+            rapid      = false,       -- keep firing while the button is held
             auto       = false,
-            autoCone   = 4,           -- degrees around the crosshair
+            autoCone   = 30,          -- degrees around the crosshair
+            autoSight  = 0,           -- seconds a target must sit inside the cone before autofire commits
             autoReload = true,
         },
         esp = {
@@ -239,32 +247,63 @@ do
             chams     = true,
             offscreen = true,
             tracers   = false,
-            maxDist   = 2000,
+            maxDist   = 3000,
         },
         radar = {
             enabled = false,
-            range   = 350,
-            size    = 170,
+            range   = 425,
+            size    = 190,
         },
         world = {
             fov          = 0,         -- offset added to the game's own field of view
-            clearWeather = false,
+            clearWeather = true,
         },
         ui = {
-            accent       = "Amber",
-            reduceMotion = false,
-            scale        = 1,
-            autoSave     = true,
-            killFeed     = true,
-            tab          = "Combat",
-            x            = -1,
-            y            = -1,
-            minimised    = false,
+            accent          = "Violet",
+            reduceMotion    = false,
+            scale           = 1.2,
+            autoSave        = true,
+            killFeed        = true,
+            tab             = "Combat",
+            x               = -1,
+            y               = -1,
+            minimised       = false,
+            lastSeenVersion = "",     -- changelog bubble fires when this differs from E.version
+        },
+        mobile = {
+            autoDetect  = true,       -- treat this session as mobile when the input hardware says so
+            force       = false,      -- keep mobile layout even on desktop
+            floatButton = true,       -- a corner tap-target that opens the panel on touch
+            magnetism   = true,       -- turn the game's own touch magnetism on for real mobile clients
+        },
+        -- Experiments: untested ideas the user tries by hand. Everything that
+        -- changes gameplay ships off; the two alerts only warn.
+        exp = {
+            noSpread       = false,
+            magnetism      = false,
+            noRecoil       = false,
+            fastReload     = false,
+            instantAim     = true,
+            longThrow      = false,
+            finishDowned   = false,
+            adaptiveLead   = true,
+            noFallDamage   = false,
+            safeSprint     = false,
+            instantPrompts = false,
+            meleeReach     = false,
+            meleeRange     = 30,      -- studs
+            autoSpot       = false,
+            modAlert       = true,
+            modLeave       = true,
+            voteAlert      = true,
+            voteLeave      = false,
+            streamer       = false,
         },
         keys = {
-            panel  = "RightShift",
-            silent = "None",
-            esp    = "None",
+            panel    = "V",
+            silent   = "None",
+            esp      = "None",
+            autoFire = "None",
         },
     }
 
@@ -785,6 +824,7 @@ local B64 = {
     i_world = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAE4UlEQVR42u1bz4scRRT+XndnTTDCbsRdyMlcvEXQkCAshBVDvOY/WAibIV485yiReMvFsxfPOQRykAREyUEUEhLYHAJe9GIgjrPZIBLM9PTnwVf6qK3+uT0znZ0uKLqmpuq9772qevXqF7DgQebBlGQU4E0RydCHA9wDSIqIkOR7AJZdtuL4VUR+cWUOpLa164Pkj9wbvtD/klliSuaki78AZAAm2gMSAH/PA8i8FBBppMZoXgY5WnQjGDUcy7Ebz12xLSTjmQwBkpGITEw6m7fwDkMTPFFNZomIZCQHJDc03cSOMCeiIZ4NkoN94KnGTL9bOm3tkjxdZ+oy0+DdwDR4tSYth+e0YiHJralMpQa4E/6lfnfqKMHQuaV1/yA51PSVGnSs8Dsepi3Lqw3hY/0OlMGYZEZy0kQJWu4oyRWSyxpXSB5u0PJO+IliGuvvgcXehoUVkh+RHBmGJJkGlBDNwJO0wqceppFilTZ7QRHj1DCupAQFtyfWwDDKwTC9hsjpeqkZFiT5nORaFYHqLqI0rikPyzNtOhTbUsLYdL9PSCbTGAY6FBPl4br8eGbC5yhhZKaxS661SloyVkFiFSry8grr6/eS4TuamfABJZwi+RvJy2UA6ljkorKG92XlfWo/wst+XVCSb4rIKM8Nda2mGyERgA8AfAjgfbMpsgvgAYDvAfykdP+r15T3LDc4pKwlSV4kuc3ysE3yYllvMMNhvouyAuGdco6TvG0EdA5L6kXnYLlwm+TxIiHbnGmm1TPOkHwSmC0yI7RTRhaw7k9InulESzfwHNdIPvXmbDtvh4L9z9V5anyLqPO7wgbkHQDnAKS670DD83cAPwDY1rx3AawDWPXKubrfAvhYjWLW5dZ3C6dNrxUz08U/J7kaqLuq//nlHY3N1hY4JY5KUhZL6h8i+dhbMaaaHnjbao6mnS0GWjb1VnqPlXaRo5RUiDLt1l8PCE+S1/T/pRAIVd6Spq8FVnoZyfW2e0HiORYnAGya0xp/G0sAvADwpYi88E5xXPkNTU/0G+mYv67AxyHnRh2lsZa5DmALwFvKN1OsG2o7JHDadATApwCOlOD/Wk+g/neeTOudZ7VwzJ+HDY2bpvVcC96o2nKGzo0AnZsBB8s5RMcqYj9vafjTyku1vO5r41i/w5wNTJe3Esh7pECrjD+3lH7k0bC08/gPPaw2WtkKt8XFxLz/0OHDXsmZ4oPYfQUcAhBrzAvLBcoBgGeBvJM6TqtsfVPLngwI8qzAfxHFloc9NjLuUYADNtQVWRYYHs6I/KldLE8B9wFc0PKxfs+q3XhedPxtxzOAs+bccGJo5ylgDOAbAG/kGEEn07BgGC3eNBgCEZXFDjtCUYU4PRv2KrrC/WJo0ZfD/YZIvyW24Jui/bb4oh+M9Edj/eFofzzeX5Dor8jM4ZLU4cAlqaOdvCTV8jU5B/6K1h3qVbkdkreq9qCZXpNr+aKko3E14AHerQO8rYuSlQuKSKpXU79SkD+LyD3NS2vq070TSNUbjTWNBnjukbwA4B3F1gRPo/V+7W5mWu0zY0+cEfuuIc3GeBrdFlcfPO7KKy/FE/2blMlMXow0YTRtJaB/MYJX6s2QO/DMzIlNtkgKeE1735LJe32RHk6eAPC2d4KzKyIPD/TDSfSPp/vH050L/wDW4oD9GRplzgAAAABJRU5ErkJggg==",
     i_stats = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACh0lEQVR42u2by4rUQBSG/786DgqCC0EYxPUIs9YHGHwLd8LgxofwJYQRLy/h1jdw5663M7gQVBBE7bY7v4s+BaHppCqaLiaZc6BIXypVqS91O5cCXK62cIwPLSn53CQ1yTcmaZaZL0yuB0giSUm6AeA6AG21IX7/TrKO+afy5oNdn0g6l/RF0ret9NXSR0kP+/SEUXR7SY+UL58lHUpi15wRRjZZn1g3X9q1La0A3AFwbEOgtZ3VyDrDwmCExPwVGiA6JUx42WZO/vFPEP8pDsABOAAH4AAcgAO4ulJdMl1eJOtJAjDdfJ2j9paEUAyAGTIeALi5q902HD+RnJc0ZFSFDBkE8ALA00T2paRnJF+V6glh32PeGvHYGr8CULekNYADAC8l3TeTVhj7KhDV0SNrZOzqu9LMIBDAvVI2y1LL4DLDiBEbLAB/prYPGNyQ4RshB+AAHIADcAAOoIwuMGV/fDWUemr7/vWkAJhaGpWSWx3++N8kf43RH1+l3rz52V8DuNuyra0B/JT0nOTb0gaNvQCwMS9JhwDeYeNq7pLbAN5IOif5fkzDoW0VCNaVj63xq4Q/PvrrT8YWepOaBFcNHT7ljyc2/vtJ7QP6qqb0jZADcAAOwAE4AAfgAByAA3AADsABTABA1PdzRT1/71vnUOVkA7jWcFmnKquxCXDYJQeN+IBUObR691kOUgaRWMGFfW4GL7TZAQKA+db98Tq3/2M0SFudM7te7KmcfzqkdCppkXFG50zSbDusRVKw388yylhIOt112GmocnpZcBrH1I6wsQrXLff8IPkhA+ogUWJFo81yA5VS3qMc71JOfUOV08uG1wh163KNrUtFil7GiFOXscpfMYMftrnsp1IAAAAASUVORK5CYII=",
     i_settings = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAFf0lEQVR42u2bz4sVRxDHPzVvVkggkFUMJKAiwZAYcjARPIh6CQFDjoIHL+7/kIugN28JePCmFy/ecgwGNKc9KZgEjXFFCUGjBiNrDjEJ2X0z31yqodPOe29+vP3h21fQ7NuZnurq6qrqqupqmMLGBluLQSX1fOzSH2WAzKyYeI775Bu/e+klQJIBmJkk7QOOAB/66++Br8zsWtxvklbdwsQkndFgOJP2nxQGZN7O+UQLScuS+t6W/Zm8TyYpmyidlzTnE1ySVFasfunvJGlurWxCU7HOJPW82ZDVN0nzvsr9ISrQ9z7zAf+QscO42aqry6CVSZ8HXZa0WdLTaKUHQXj31L95wRbUHbsu5G302cwKX513gDeBP4GfzOwfSeaW3oDczJYlPW+44xjw3PHMSOoHnD72K8D7wGvAb8DdQJOZlauhz0cl3Yx0VpIeSDoVmBR/I+mApMe+wqMkoPS+B+JVDTglnfKxFNmUm5KOrqjdiAg4nRBdJJO65P22Svpc0g21hxuOY6vjvJQwq0j6n04XYNwrfyQyVv0KRiz778uSHlbodhOIv3noOJVsmaqg50gTSbAGXlwO/Oh6XwKDBijdtwfo+++2K1J6yytwp1D4u7vAB0C/jjeZ1TR6AnYBO/1xbwTOIiK8izhmjqOMJjgIAk07gV1uNLPODIikZBuwCajjo/c6TryKzjoiLadxW10Jb0LkMxfp9Q59p7U2Z0fqoduA28BiEsevJyidtkXgttNcdmaA639mZn8BZ18CBpx1WrM6RtCa+gHA18DhERZ5LSafAd8An/nClWNNiLhIhXYJ+MQtc6/D9pZKYxuGBhouA5+6IVTdhErTAQXMAu+2/L50HGF7i1vm78oWOwRO02zNXapZMJQENseB7W5t8xYrBbAAXAPu+/87gH3Aey5hTSTLnJbtwHEz+zIOoDq7wElgMyPp1gA/fBgEF/mqpI8l5RVj5f7uavJNHQjxyC1JM0kuotcpiem/ZyW9Lml/C99+OUp15Qlzc2+9hBHnWjAh0LTfaZ2tmkvTBOacpG89QfFM0pOGAU2QkvNxJmeExIWxzyc46sITp/Wp0z5XO9EaExitQlsIhF+P0me1Yo8ojXa9JRNSOJcyeFTYG1LX/3qYWdZIZlQxoJB0KIh2AynM/e+hCE8TVQit73OIU+69UZPfG+lf2XH177pOW8uka+44ukhBGdmSvSkTsgqn6NgYTo7CXj5vZv2WDk7m384nOOlw+nUsfZZVEL1njMdm9zvgsgQHYzgC3JMyczJOXzomGtLfP0Rub1fY0QGXEhydfLpkblkVA0KnixXP2jL2oFv0Nvpb+rcHO0prPIeLQ+e1obfBqSM0dYWnwdCGDIfzEQnRoiIhcgH4osZBRTpO4UmPK8CCpEEJkZA8yRt6njlwwWmc8ZOhctw5QYAtwHeegVFDL6+M8oqDtiw13PICDQ+AjzwtzkrlBA34A7jT0j/PorR6P2mBOVnLuOOO02YrUiY3qWnxrK4xdIQnfPL9dRZHZE7TYeCEmZVjOx6PdP9V4GfgjRZ6uponQ78DbwN/17EFWc24XMBuN4Bap1FkOFfYAuwOR3rjNIKb2xRVrQHkTuvYToeDCP0KLNU0nMWYD1BDgUQdlV5yWmtFs3VOh8Px+D3gl2iCw4jtRYap7DjxflQgUY5gOk7jPS+pK8elApmZLQMnIwkohhB7BXiUnPm1iePDGeIjxzmIqUUkASed1mxaJse0UHL8FyZCOWrDUtlNwONoG7URfv0i8JaZLUWBjSLcVaWy5YqXyk5isXQrXfHC5BfK5dNLT+6MhABqYUBlSFXlyEIIbFJPLhr7f+Xy6/bC1cRemJhemZmQS1PTa3PTi5PTq7NT2NDwH8vq7nVib7WEAAAAAElFTkSuQmCC",
+    i_lab = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAEnklEQVR42u1bPW8UVxQ9d2Z3Y5PKjkWHBG6CJSJFwekJMg2IghI6JCooTY/oaPgNuOIHuF0hS2kdRUhBQSkQkWhAKHIV7MieOSl8nvL0NLOfb+cjniuN3ko7e+9955535747b4EzLhZDCUkDkFTse25mRCc1MoCkmRlJrgD4vmLfX5vZgfOhFvRIphq3WL1s+T7MKr1IWJwAyHUtOhc4GycxlPUiLiWXCEMAuIBlarESeGwAFvakKbDVKACOARwA+BrAIPjuCMChHOYUkySAZQBLBbb+1tgMITkguULyZyWoE5LH+vxM361pnORy9z6TjmPppGyskBw0igF6JBVF5YuZHcwI7JcRtpqVA0iWrfdUzvamyNzu3rTElk25pBYOAFQQFQZS33HSgsXdW6ZQ30VhQIIzLh0AHQAdAB0AHQAdAB0AHQAdAJE6wxY0QjKcdnAwR/cnC2p+i1UGRwVAdb6/G+xrM3NuDrXnpKMf7AbZGAAUDZJcAnDBa2h8ALAL4M0MrTF37xvp+OCx64JsRdkQxWBAqojcAXBZlE1w2h06BPDKo/M01Id+eyhdiXRfBnBHNlM0oBuUaNzzukGZPn8kuUpyqnXr7tdvP0pX5nWF9nzbdU4+laPXPCfpOXpf9/Vm0N3TeD/Q6Wxck+20VgA0vvR6d7muz+rtzZS1PRasSZfT63qNL2O8GJmL+nJwg+ShnKPn4NN5HfQAfhrozmVzQz4kdQDgKPq8wLl/SK7P65wH8rp0hiA/n3WJzf3o03We5CePnm6dvohFT48FL7xc4Ox9kg9Ri6Npor8dRMQlqM0FALAZ2HA2tytlgRf9JZK/KxKZF5lXom4SOd8k0p17j9pcPixVxgIv+neDx5Mbb8bOzh4LbpbYvFsZC4LCJ4zGW5LLsaPhsW5ZNkLWVVMYTVD4PFhUJDzmPaitMFpk4dP4wqiKwqfRhdGYwucoRuEzZWF0VFlhFNCvqPDZqaou91iwU1IYxV+GXvSfBAnIGb6iBNnXuMjL2bji2fd9ehKVBV70ByTfBY8gktytcTe6G/Qgcvk4mJQFk6CUmFlG8h6AdXVlUq9rs0/yutexqUKc/X0At70Tapl8vGdmO1ou2VwnRUkmZpaT3Aew6QHQRHG+/WJmPzrfZwZACOYAfgIwLOkjMsZRlYjH89yEbwDYcwyeuSmq5uO27mWJE0lNl5V0lBMA25O0z21MzU8A3wL4Ff+d1zM0W+idT/wBwB+ncSxeCsno4BsBPMbpgcWsBZN3Acrk82PNwaZigPf4+AbAW41oCQA+C/4CsKERRUsiGfOy4xGANSWWtkzeBSqX749GvUSxEdHvK/qXvMTSJnFBey8WHBexICkpfAjAFT55S1+jJ/LdFUaFQUxGrJ+H+P/Iw7IXtElY+KjquwXgKsrP67ZFUs3hKslbmls6SRLcin2WuEbpBXOaaPeXkvyO5NDb/bVN3O5wqLmkRbvDXtlJbDP7jeQQwHVl0H7LIu98HmouvaI6oDemFF7VMvmqhdR3Pq+OatPZmD9EXgJwUdnTWgaA8/lPM3tf6x8sW/vXWVHHWj5HjmuKnGn5FwQ+zU0MxXBOAAAAAElFTkSuQmCC",
     i_lock = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAADsklEQVR42u1bu24UMRQ9d9abEIqEBKWHP0iQUqTkoeUz+ANEhWhpIkSF6CipIvEHRAHKFEgkfQroIxQIUjbZ16HIdeI4s7uz9mg3m7Gl0Wge9vgcX1/bZ66Biifp94BkNuj5CIki0gvKeA3qUD0LICkiQpKrAO7EsK7l/xKRn7bcgi1v63AfwD2nrND0R0R2h9aBpJA0JDOSOywnbWjZZgTTN3reKKkOO4rJkLxE5KVKKTsd/fgRgJ5emwDWbb7TiJY7LakOR+oDrviBzHE2ILlC8ivJbQBr+ryu5hd6lNFNQ4+6Ylgjua3YVlzMxvMFywAeFh0phqS6nmsR4GsOkJi0COCxg/Ecl29WbQBdNRWjLxGA7Q72ukjqKoDjiIofAzh0yipqMdSWn3euO3qv3dcH6Ms1r9X/AljVc8go0FT/0ils8xfvvgPwIXAUWACw64xkNSVABhHQD8hvEfk39jFa5ATASeAkqlPEWot61roOH6N0AX90CQEhgU6TRf2GGWEqSZLBYAItgAGkQetaKG9W9alwIiARkAhIBCQCEgGJgOomkzPv7zgrP7ECyZSmjh50VogcRMBMzr3lkoSNSeidyzn3Z/IIsKzsA3jtXNvlbHMKCWgCeAVgzsOz72KeWMuSdHUHikh34rK4Lj9rAwSKMoDLWZGXf1SoRscyV5t9lOiu+w0Zc6uf6/Ik13Gh030RkR3/nRuV9J+DkFwiuZmj3W/qMwkUQq49ATUF90kBt72D+kzUP9ws8NbsFWgrxwLsvXU3z02ZCVqTbgxQeK2W1xinf0prgXH1Aj1vDVCWrWVseXmSE0zD4CRCZKoyEUpT4bQYUvZFpKcxOc9ylsPvRaQ5DfN0J75oDsDznOXwR41Zys6t0JmpNfrE2CxF/KwcOwF6XuqDpeFi9vtIK0cSO5zSMZkADnAWHeJKYq1hARLGI8AAU615Go8ASVPhREAiIBGQCEgEJAISAYmAEWZ5VqSQguF3Ew2U1DpKmQS0FQTHHCrLUP2RZLssAgTA3VF2fPjB0hrzG2IBt5zlbEiwtIQESLjh8ragvYhw+bcA3pA0RZUl590XAF5Ghsu79eGwAIm6fqjmFbgQYcm3I/MuliT81L2NHLkBEgcAvmlrP3DW0ojYrxMjdXWdsB0TAf4QwA+1igMXs1Fn09PzHoBHaoafATyJ+HhZTpMRZdm6fxeRp56D7V3pAo4q3NP+k8GLqRkh2XyzEeBnS6rDvKrO2VBVuNIbJ5G2zqbN05VL/wFz72Fzh3+emgAAAABJRU5ErkJggg==",
     i_close = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABVElEQVR42u2awY6CMBRFoeEPZuFP6Mr4SSbOhxtXknEtcmbzjE2jI0Ip0+aehEjQ+O69aQu0rSohhBBCCCGEmABQl1jrI0GAS1DL/asQPEFfc4eQstZQQY19HoAjsPWvz1Rra7UOc9X6tNnveXAGdrGFeeZ3VuPOfpHuADigAb5NyA242nkbM4TAfGs1rlYT09Ak6w5AbccKuHiCALqYIbww3wU1L6alTtYSvMHIb5JdzBDemO+edDm31Oj/l8BRIQw03y5mfoLQZon/zCaE7MzHFJ6t+RgGsjc/xUgx5seGUJT5ESGs7SjH/MAQbt6DzDm4lr/5NyHcjfbeS00ffJe/+Rch/ASG++Ac+00Z5p+EsAFOgXE/iBOwSWneVUJdQIOgboN6ENKjsF6G9DqsCRFNiWlSVNPiWhjR0pgWR7U8rg0S2iKjTVLaJieEEEIIIYQonV98fka8QGcEcgAAAABJRU5ErkJggg==",
     i_min = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAv0lEQVR42u3WwQ3CMAyF4feaHlmCGWAfZmMYbiBGYITeONGaC5EqbpDKReL/pB4TO3YcVQIAAAAAAAAAAAD+glsWR0Rp3WMBYXuklZk3ICJsOyLiIGkraZLUJedeY95sH2tOWQXobE8RcZa0W7mJF9v7mtOni/vG4IOkh6RRUkk+eI05tGzSLzBC8y97fJvjthZg8+pCWeHql1kO6QWoj81J0n3lEbi+5YTMH6HuJw7xxesPAAAAAAAAAAAA/JknUUcwn5TVqmUAAAAASUVORK5CYII=",
@@ -1044,6 +1084,14 @@ do
         return t and t.Name or nil
     end
 
+    -- the name shown anywhere in the hub; streamer mode hides real names
+    function E.nameOf(p, fallback)
+        if E.cfg.exp and E.cfg.exp.streamer then return fallback or "Enemy" end
+        if typeof(p) ~= "Instance" then return fallback or "?" end
+        local dn = p.DisplayName
+        return (type(dn) == "string" and dn ~= "") and dn or p.Name
+    end
+
     function Game.ping()
         local ok, p = pcall(LP.GetNetworkPing, LP)
         return ok and p or 0.06
@@ -1178,12 +1226,28 @@ do
         target = nil,          -- world entry currently locked
         part = nil,            -- the part being aimed at this frame
         point = nil,           -- predicted world point this frame
+        lastPoint = nil,       -- most recent non-nil point, kept for the silent aim fallback
+        lastPointAt = 0,
         route = "none",        -- how silent aim is installed
         wrapperCalls = 0,
         shots = 0,
         lastShotAt = 0,
+        leadScale = 1,         -- multiplier from the self tuning lead, exactly 1 while it is off
+        leadStats = nil,       -- what the self tuning lead has learned, for debugging
+        -- how the current point was led, for reading back while testing
+        leadInfo = { time = 0, flight = 0, delay = 0, dodge = 0, mode = "ground", scale = 1, speed = 0 },
     }
     E.aim = Aim
+
+    -- how long a cached point stays acceptable when the current frame lost the
+    -- lock: long enough to survive a single stutter (about six frames at 60fps)
+    -- but short enough that a target running behind a wall is not fired at
+    local POINT_STALE = 0.10
+
+    local function finishing()
+        local ex = cfg.exp
+        return ex ~= nil and ex.finishDowned == true
+    end
 
     ------------------------------------------------------------------------
     -- Part choice. When sight is required and the chosen part is covered but
@@ -1217,7 +1281,10 @@ do
     end
 
     local function valid(e, fovLimit)
-        if not e or e.downed then return false end
+        if not e then return false end
+        -- a downed enemy is normally left alone, it is no threat until revived.
+        -- The finish downed experiment wants exactly those.
+        if e.downed and not finishing() then return false end
         if not e.char or not e.char.Parent then return false end
         if e.dist > cfg.aim.maxDist then return false end
         if e.angle > fovLimit then return false end
@@ -1226,6 +1293,10 @@ do
     end
 
     local function better(a, b)
+        if finishing() then
+            local ad, bd = a.downed == true, b.downed == true
+            if ad ~= bd then return ad end
+        end
         local pr = cfg.aim.priority
         if pr == "Distance" then return a.dist < b.dist end
         if pr == "Health" then
@@ -1240,7 +1311,14 @@ do
         -- sticky: hold the current target through small crosshair drift so the
         -- lock does not flicker between two people standing close together
         if cfg.aim.sticky and cur and W.map[cur.player] == cur and valid(cur, half * 1.5) then
-            return cur
+            if not (finishing() and not cur.downed) then return cur end
+            -- finishing a downed enemy outranks the lock, because a teammate
+            -- can revive them while we stay on someone else
+            local swap
+            for _, e in ipairs(W.list) do
+                if e ~= cur and e.downed and valid(e, half) and (not swap or better(e, swap)) then swap = e end
+            end
+            return swap or cur
         end
         local best
         for _, e in ipairs(W.list) do
@@ -1251,34 +1329,476 @@ do
 
     ------------------------------------------------------------------------
     -- Prediction. Replicated velocity is honest in this game (observed over
-    -- reported measured at 0.99), so lead comes straight from it. Lead time is
-    -- bullet travel plus network delay. Gravity is zero on every firearm, so
-    -- there is no drop to add.
+    -- reported measured at 0.99), and the server flies every bullet itself at
+    -- the Tool's Velocity with no gravity, so a moving target is hit where it
+    -- will be when the bullet arrives, not where it is drawn now.
+    --
+    -- Every enemy keeps a small track, fed once a frame from the velocity the
+    -- world snapshot already read:
+    --   short average   about 0.1s, follows the current run
+    --   long average    about 0.7s, the drift underneath side to side dodging
+    --   acceleration    from successive short averages, clamped and fading
+    --   reversal rate   how often the run direction flips, which is A and D
+    --                   dodging when it is high
     ------------------------------------------------------------------------
+    local VEL_TAU        = 0.10   -- short velocity average, seconds
+    local LONG_TAU       = 0.70   -- long velocity average, seconds
+    local ACC_TAU        = 0.15   -- acceleration average, seconds
+    local ACC_DECAY      = 0.35   -- acceleration fades toward zero over this many seconds
+    local ACC_MAX        = 45     -- studs per second squared; humanoids change speed almost at once, so more is noise
+    local RAW_SPEED_MAX  = 120    -- a fling reads far faster than this and says nothing about where they go next
+    local SPEED_CAP      = 24     -- the client kicks itself above 23 studs per second, so no legit run is faster
+    local TRACK_STALE    = 0.5    -- a gap in samples longer than this starts the track again
+    local REV_MIN_SPEED  = 4      -- slower than this the run direction is too noisy to read
+    local REV_COS        = -0.5   -- a direction change past 120 degrees is a reversal
+    local REV_WINDOW     = 0.6    -- but only if the old direction was still seen this recently
+    local REV_RATE_TAU   = 1.5    -- reversals are counted over roughly this many seconds
+
+    -- Lead time is bullet flight plus network delay. GetNetworkPing is a round
+    -- trip, and both legs matter: what we see of an enemy is already behind
+    -- the server, and our shot then takes time to reach it. On top of that
+    -- Roblox draws other players a little in the past to smooth them out.
+    local DEFAULT_SPEED  = 2500   -- muzzle speed when the Tool has no Velocity attribute
+    local INTERP_BUFFER  = 0.05   -- seconds other characters are drawn behind their newest update
+    local PING_MAX       = 0.4    -- a lag spike beyond this is not worth chasing with the aim
+    local SOLVE_STEPS    = 4      -- fixed point steps; bullets are 75 times faster than a runner, so 4 is plenty
+    local MAX_LEAD       = 16     -- studs, the furthest the point may sit from the real part
+    local MIN_LEAD_CAP   = 4      -- studs, so a close target still gets its network lead
+    local LEAD_DIST_FRAC = 0.25   -- and never more than a quarter of the distance
+    local AIR_VY         = 1.5    -- vertical speed that confirms a jump or fall
+    local VY_MAX         = 150
+
+    local STATE = Enum.HumanoidStateType
+    local tracks = setmetatable({}, { __mode = "k" })   -- world entry -> track
+
+    local function finite(n)
+        return n == n and n > -math.huge and n < math.huge
+    end
+
+    local function sample(e, now)
+        local v = e.vel
+        if not v then return end
+        local x, z = v.X, v.Z
+        if not (finite(x) and finite(z)) then return end
+        x, z = math.clamp(x, -RAW_SPEED_MAX, RAW_SPEED_MAX), math.clamp(z, -RAW_SPEED_MAX, RAW_SPEED_MAX)
+        local tr = tracks[e]
+        if not tr or now - tr.t > TRACK_STALE then
+            tracks[e] = {
+                t = now, vx = x, vz = z, lx = x, lz = z, ax = 0, az = 0,
+                hx = 0, hz = 0, hT = -1, rate = 0, speed = math.sqrt(x * x + z * z),
+            }
+            return
+        end
+        local dt = now - tr.t
+        if dt <= 1e-4 then return end
+        tr.t = now
+
+        local pvx, pvz = tr.vx, tr.vz
+        local kv = 1 - math.exp(-dt / VEL_TAU)
+        local vx, vz = pvx + (x - pvx) * kv, pvz + (z - pvz) * kv
+        tr.vx, tr.vz = vx, vz
+        tr.speed = math.sqrt(vx * vx + vz * vz)
+
+        local kl = 1 - math.exp(-dt / LONG_TAU)
+        tr.lx, tr.lz = tr.lx + (x - tr.lx) * kl, tr.lz + (z - tr.lz) * kl
+
+        local ka, fade = 1 - math.exp(-dt / ACC_TAU), math.exp(-dt / ACC_DECAY)
+        local ax = (tr.ax + ((vx - pvx) / dt - tr.ax) * ka) * fade
+        local az = (tr.az + ((vz - pvz) / dt - tr.az) * ka) * fade
+        local am = math.sqrt(ax * ax + az * az)
+        if am > ACC_MAX then ax, az = ax * ACC_MAX / am, az * ACC_MAX / am end
+        tr.ax, tr.az = ax, az
+
+        -- The heading follows gradual turns frame by frame, so only a sharp
+        -- flip counts. A and D dodging passes through a near stop, which is
+        -- skipped, and the next reading points the other way.
+        tr.rate = tr.rate * math.exp(-dt / REV_RATE_TAU)
+        local sp = math.sqrt(x * x + z * z)
+        if sp > REV_MIN_SPEED then
+            local dx, dz = x / sp, z / sp
+            if tr.hT >= 0 and dx * tr.hx + dz * tr.hz < REV_COS and now - tr.hT <= REV_WINDOW then
+                tr.rate = tr.rate + 1
+            end
+            tr.hx, tr.hz, tr.hT = dx, dz, now
+        end
+    end
+
+    -- While someone dodges, the way they will be running when the bullet lands
+    -- is close to a coin flip. Treating each reversal as a random event at the
+    -- measured rate f, the distance they still cover in their current run over
+    -- t seconds shrinks by (1 - e^(-2ft)) / (2ft). That share of the lead comes
+    -- from the current run and the rest from the long average. A steady runner
+    -- has f near zero and keeps the short average plus acceleration in full.
+    local function keep(tr, t)
+        local x = 2 * (tr.rate / REV_RATE_TAU) * t
+        if x < 1e-3 then return 1 end
+        return (1 - math.exp(-x)) / x
+    end
+
+    local function drift(tr, t)
+        local k = keep(tr, t)
+        -- an average of a steady speed change trails it by acceleration times
+        -- the time constant, so that is added back first
+        local cx, cz = tr.vx + tr.ax * VEL_TAU, tr.vz + tr.az * VEL_TAU
+        local bx, bz = tr.lx + (cx - tr.lx) * k, tr.lz + (cz - tr.lz) * k
+        local half = 0.5 * k * t * t
+        local ox, oz = bx * t + tr.ax * half, bz * t + tr.az * half
+        -- acceleration may turn or stop a run, never push it past a speed a
+        -- humanoid can actually reach
+        local cap = math.max(math.sqrt(bx * bx + bz * bz), SPEED_CAP) * t
+        local m = math.sqrt(ox * ox + oz * oz)
+        if m > cap and m > 0 then ox, oz = ox * cap / m, oz * cap / m end
+        return ox, oz, k
+    end
+
+    local function moveMode(hum, vy)
+        local ok, st = pcall(hum.GetState, hum)
+        if ok then
+            if st == STATE.Freefall or st == STATE.Jumping then return "air" end
+            if st == STATE.Climbing then return "climb" end
+        end
+        -- FloorMaterial is not trusted alone on other players' humanoids, so it
+        -- only counts together with real vertical speed
+        if hum.FloorMaterial == Enum.Material.Air and math.abs(vy) > AIR_VY then return "air" end
+        return "ground"
+    end
+
+    -- On the ground a jump bob or a slope reverses long before the bullet
+    -- lands, so vertical speed is ignored. In the air it follows the arc.
+    local function rise(mode, vy, g, t)
+        if mode == "air" then return vy * t - 0.5 * g * t * t end
+        if mode == "climb" then return vy * t end
+        return 0
+    end
+
+    local groundParams = RaycastParams.new()
+    groundParams.FilterType = Enum.RaycastFilterType.Exclude
+    groundParams.IgnoreWater = true
+    pcall(function() groundParams.RespectCanCollide = true end)
+    local gfChar, gfMine, gfCosmetic
+
+    -- An arc can carry the prediction through the floor. Cast straight down
+    -- from just above the target's current feet at the predicted spot, so a
+    -- step or trench lip is caught but a roof overhead is not, and keep the
+    -- root at least standing height above whatever is there.
+    local function landing(e, root, hum, x, z, vo)
+        local mine = LP.Character
+        local cosmetic = workspace:FindFirstChild("CosmeticProjectiles")
+        if e.char ~= gfChar or mine ~= gfMine or cosmetic ~= gfCosmetic then
+            local f = { e.char }
+            if mine then f[#f + 1] = mine end
+            if cosmetic then f[#f + 1] = cosmetic end
+            groundParams.FilterDescendantsInstances = f
+            gfChar, gfMine, gfCosmetic = e.char, mine, cosmetic
+        end
+        local rootY = root.Position.Y
+        local stand = hum.HipHeight + root.Size.Y * 0.5
+        if not finite(stand) or stand <= 0 then stand = 3 end
+        local hit = workspace:Raycast(Vector3.new(x, rootY - stand + 1, z), Vector3.new(0, vo - 3, 0), groundParams)
+        if hit then
+            local lowest = hit.Position.Y + stand - rootY
+            if vo < lowest then return lowest end
+        end
+        return vo
+    end
+
+    -- Same firearm filter as Game.equipped, without its state table lookup,
+    -- which can fall back to a full getgc scan and has no place in a frame.
+    local function muzzleSpeed()
+        local char = LP.Character
+        local tool = char and char:FindFirstChildOfClass("Tool")
+        if tool and tool:GetAttribute("CanFire") ~= nil and tool:FindFirstChild("AmmoLoaded") then
+            local tt = tool:GetAttribute("ToolType")
+            if tt ~= "Flamethrower" and tt ~= "Flaregun" then
+                local v = tool:GetAttribute("Velocity")
+                if type(v) == "number" and finite(v) and v > 0 then return v end
+            end
+        end
+        return DEFAULT_SPEED
+    end
+
+    local function leadMultiplier()
+        local ex = cfg.exp
+        if ex and ex.adaptiveLead then return Aim.leadScale end
+        return 1
+    end
+
+    local function lead(e, part, pos)
+        local root, hum = e.root, e.hum
+        if not (root and hum) then return pos end
+        local now = os.clock()
+        local tr = tracks[e]
+        if not tr or now - tr.t > TRACK_STALE then
+            sample(e, now)
+            tr = tracks[e]
+            if not tr then return pos end
+        end
+
+        -- the game casts every shot from your own Head, not the camera
+        local head = Game.myHead()
+        local origin = head and head.Position or W.camPos
+        if not origin then return pos end
+
+        local speed = muzzleSpeed()
+
+        local ping = Game.ping()
+        if type(ping) ~= "number" or not finite(ping) then ping = 0 end
+        local delay = math.clamp(ping, 0, PING_MAX) + INTERP_BUFFER
+
+        local vy = e.vel and e.vel.Y or 0
+        if not finite(vy) then vy = 0 end
+        vy = math.clamp(vy, -VY_MAX, VY_MAX)
+        local mode = moveMode(hum, vy)
+        local g = workspace.Gravity
+        if not finite(g) then g = 196.2 end
+
+        local dx, dy, dz = pos.X - origin.X, pos.Y - origin.Y, pos.Z - origin.Z
+        local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        local t = delay + dist / speed
+        local hx, hz, k, vo
+        for _ = 1, SOLVE_STEPS do
+            hx, hz, k = drift(tr, t)
+            vo = rise(mode, vy, g, t)
+            local fx, fy, fz = dx + hx, dy + vo, dz + hz
+            t = delay + math.sqrt(fx * fx + fy * fy + fz * fz) / speed
+        end
+        hx, hz, k = drift(tr, t)
+        vo = rise(mode, vy, g, t)
+
+        local scale = leadMultiplier()
+        hx, hz = hx * scale, hz * scale
+
+        local maxLead = math.min(MAX_LEAD, math.max(MIN_LEAD_CAP, dist * LEAD_DIST_FRAC))
+        local m = math.sqrt(hx * hx + vo * vo + hz * hz)
+        if m > maxLead then
+            local s = maxLead / m
+            hx, vo, hz = hx * s, vo * s, hz * s
+        end
+
+        if mode == "air" and vo < 0 then
+            vo = landing(e, root, hum, pos.X + hx, pos.Z + hz, vo)
+        end
+
+        if not (finite(hx) and finite(vo) and finite(hz) and finite(t)) then return pos end
+
+        if e == Aim.target then
+            local li = Aim.leadInfo
+            li.target, li.time, li.flight, li.delay = e, t, t - delay, delay
+            li.dodge, li.mode, li.scale, li.speed = 1 - k, mode, scale, speed
+        end
+        return Vector3.new(pos.X + hx, pos.Y + vo, pos.Z + hz)
+    end
+
+    local leadFaulted = false
     function Aim.predict(e, part)
         local pos = part.Position
         if not cfg.aim.predict then return pos end
-        local tool = Game.equipped()
-        local speed = tool and tool:GetAttribute("Velocity")
-        if type(speed) ~= "number" or speed <= 0 then speed = 2500 end
-        local t = (pos - W.camPos).Magnitude / speed + Game.ping()
-        local v = e.vel or Vector3.zero
-        -- ignore vertical velocity from jumps and falls, which mostly reverse
-        -- before the shot lands
-        return pos + Vector3.new(v.X, v.Y * 0.35, v.Z) * t
+        local ok, pt = pcall(lead, e, part, pos)
+        if ok and typeof(pt) == "Vector3" then return pt end
+        if not ok and not leadFaulted then
+            leadFaulted = true
+            E.fault("aim lead", pt)
+        end
+        return pos
     end
+
+    ------------------------------------------------------------------------
+    -- Self tuning lead (Experiments). The lead model can be off in ways the
+    -- client cannot see, such as how far behind the server really keeps
+    -- positions or how a player's dodge rhythm lines up with bullet flight.
+    -- So a plain multiplier on the lead is learned from results. Five scales
+    -- compete as a small multi armed bandit: each block of shots uses the
+    -- scale with the best hit rate so far, and about 15 percent of blocks try
+    -- one at random. Only shots that can teach anything count: a target far
+    -- enough away and moving fast enough that the lead decides the hit.
+    ------------------------------------------------------------------------
+    local SCALES        = { 0.6, 0.8, 1.0, 1.2, 1.4 }
+    local BASE_ARM      = 3        -- 1.0, the plain lead
+    local EXPLORE       = 0.15
+    local BLOCK_SHOTS   = 3        -- a scale is kept for a few shots so hits from a burst land on the scale that fired them
+    local LEARN_SPEED   = 5        -- studs per second
+    local LEARN_DIST    = 60       -- studs
+    local HIT_WINDOW    = 0.5      -- seconds past the flight time a hit still counts for its shot
+    local FORGET        = 0.995    -- old results fade, so it keeps adjusting as ping and weapons change
+    local PRIOR_HITS    = 0.5      -- an untried scale is assumed to land one shot in four
+    local PRIOR_SHOTS   = 2
+    local MAX_PENDING   = 40
+    local CAM_STEER_COS = math.cos(math.rad(1.5))
+
+    local Lead = { arm = BASE_ARM, blockLeft = BLOCK_SHOTS, pending = {} }
+    local pointArm = BASE_ARM      -- the scale the current Aim.point was built with
+    local openShot = nil           -- recorded by the shot listener, kept or dropped once the shot is decided
+
+    local stats = { arms = {}, pending = 0, resolved = 0, hits = 0, explored = 0, lastPick = "start" }
+    for i, s in ipairs(SCALES) do stats.arms[i] = { scale = s, shots = 0, hits = 0, rate = 0 } end
+    Aim.leadStats = stats
+
+    local function resetLearning()
+        table.clear(Lead.pending)
+        openShot = nil
+        Lead.arm, Lead.blockLeft = BASE_ARM, BLOCK_SHOTS
+        pointArm = BASE_ARM
+        Aim.leadScale = 1
+        for _, a in ipairs(stats.arms) do a.shots, a.hits, a.rate = 0, 0, 0 end
+        stats.pending, stats.resolved, stats.hits, stats.explored, stats.lastPick = 0, 0, 0, 0, "start"
+    end
+
+    local function pickArm()
+        local arm
+        if math.random() < EXPLORE then
+            arm = math.random(1, #SCALES)
+            stats.explored = stats.explored + 1
+            stats.lastPick = "explore"
+        else
+            local bestMean
+            for i, a in ipairs(stats.arms) do
+                local mean = (a.hits + PRIOR_HITS) / (a.shots + PRIOR_SHOTS)
+                -- a tie goes to the scale nearest 1, so an empty table starts on plain lead
+                if not arm or mean > bestMean + 1e-9
+                    or (math.abs(mean - bestMean) <= 1e-9 and math.abs(SCALES[i] - 1) < math.abs(SCALES[arm] - 1)) then
+                    arm, bestMean = i, mean
+                end
+            end
+            stats.lastPick = "best"
+        end
+        Lead.arm, Lead.blockLeft = arm, BLOCK_SHOTS
+        Aim.leadScale = SCALES[arm]
+    end
+
+    local function resolve(arm, hit)
+        for _, a in ipairs(stats.arms) do a.shots, a.hits = a.shots * FORGET, a.hits * FORGET end
+        local a = stats.arms[arm]
+        if a then
+            a.shots = a.shots + 1
+            if hit then a.hits = a.hits + 1 end
+        end
+        for _, b in ipairs(stats.arms) do b.rate = b.shots > 0 and b.hits / b.shots or 0 end
+        stats.resolved = stats.resolved + 1
+        if hit then stats.hits = stats.hits + 1 end
+    end
+
+    -- a shot whose window has passed with no hit on its target was a miss
+    local function expire(now)
+        local list = Lead.pending
+        local i = 1
+        while i <= #list do
+            local r = list[i]
+            if now - r.at > r.flight + HIT_WINDOW then
+                table.remove(list, i)
+                resolve(r.arm, false)
+            else
+                i = i + 1
+            end
+        end
+        stats.pending = #list
+    end
+
+    -- Runs inside the game's shot, before silent aim decides. Only notes the
+    -- shot; settleShot keeps it once it is known the bullet went to the point.
+    local function recordShot()
+        openShot = nil
+        local ex = cfg.exp
+        if not (ex and ex.adaptiveLead and cfg.aim.predict) then return end
+        local e, li = Aim.target, Aim.leadInfo
+        if not (e and Aim.point and e.char and li.target == e) then return end
+        local tr = tracks[e]
+        if not tr or tr.speed < LEARN_SPEED or (e.dist or 0) < LEARN_DIST then return end
+        openShot = {
+            at = os.clock(), name = e.char.Name, arm = pointArm,
+            flight = li.flight, eta = li.flight + li.delay,
+        }
+    end
+
+    local function settleShot(pt)
+        local rec = openShot
+        openShot = nil
+        if not rec then return end
+        local steered = pt ~= nil
+        if not steered and cfg.cam.enabled and Aim.point then
+            -- without silent aim the bullet goes where the camera looks, which
+            -- is the led point only while the camera aimbot sits on it
+            local cam = workspace.CurrentCamera
+            if cam then
+                local cf = cam.CFrame
+                local d = Aim.point - cf.Position
+                local m = d.Magnitude
+                steered = m > 0 and cf.LookVector:Dot(d / m) >= CAM_STEER_COS
+            end
+        end
+        -- a shot left where the player aimed says nothing about the lead
+        if not steered then return end
+        local list = Lead.pending
+        if #list >= MAX_PENDING then
+            local old = table.remove(list, 1)
+            resolve(old.arm, false)
+        end
+        list[#list + 1] = rec
+        expire(rec.at)
+        Lead.blockLeft = Lead.blockLeft - 1
+        if Lead.blockLeft <= 0 then pickArm() end
+    end
+
+    -- ClientEvents.Hit arrives once per damaging hit. A burst can have several
+    -- shots waiting on the same target, so the hit goes to the one whose
+    -- expected arrival (flight plus network delay) is closest to now.
+    local function onHit(info)
+        local ex = cfg.exp
+        if not (ex and ex.adaptiveLead) then return end
+        if type(info) ~= "table" or type(info.victim) ~= "string" then return end
+        local now = os.clock()
+        local best, bestErr
+        for i, r in ipairs(Lead.pending) do
+            local age = now - r.at
+            if r.name == info.victim and age >= 0 and age <= r.flight + HIT_WINDOW then
+                local err = math.abs(age - r.eta)
+                if not best or err < bestErr then best, bestErr = i, err end
+            end
+        end
+        if best then
+            local r = table.remove(Lead.pending, best)
+            resolve(r.arm, true)
+        end
+        expire(now)
+    end
+
+    -- Hooked the first time the experiment is switched on, so nothing extra
+    -- runs on a shot for anyone who never uses it.
+    local learnerHooked = false
+    E.watch("exp.adaptiveLead", function(on)
+        if on then
+            if not learnerHooked then
+                learnerHooked = true
+                Aim.onShot(recordShot)
+                E.on("hit", onHit)
+            end
+        else
+            resetLearning()
+        end
+    end)
+    E.onUnload(resetLearning)
 
     local function frame()
         if not E.inGame then return end
+        if cfg.aim.predict then
+            local now = os.clock()
+            for _, e in ipairs(W.list) do sample(e, now) end
+        end
         local t = select()
         Aim.target = t
         if t then
             local part = pickPart(t)
             Aim.part = part
-            Aim.point = part and Aim.predict(t, part) or nil
+            local pt = part and Aim.predict(t, part) or nil
+            Aim.point = pt
+            if pt then
+                Aim.lastPoint = pt
+                Aim.lastPointAt = os.clock()
+            end
+            pointArm = Lead.arm
         else
             Aim.part, Aim.point = nil, nil
         end
+        if #Lead.pending > 0 then expire(os.clock()) end
     end
 
     E.bind("ENT_AIM", Enum.RenderPriority.Camera.Value + 4, function()
@@ -1296,15 +1816,28 @@ do
     local shotListeners = {}
     function Aim.onShot(fn) shotListeners[#shotListeners + 1] = fn end
 
+    local function decide()
+        if not cfg.aim.silent then return nil end
+        local point = Aim.point
+        if not point and Aim.lastPoint and os.clock() - Aim.lastPointAt <= POINT_STALE then
+            -- the aim frame between two shots may have dropped the lock for a
+            -- stutter; the point that fed the last frame is still fresh enough
+            -- and gives silent aim a stable output through 60fps blips
+            point = Aim.lastPoint
+        end
+        if not point then return nil end
+        if cfg.aim.hitChance < 100 and math.random(1, 100) > cfg.aim.hitChance then return nil end
+        return point
+    end
+
     -- decided once per shot, inside the game's own call
     function Aim.shotPoint(state)
         Aim.shots = Aim.shots + 1
         Aim.lastShotAt = os.clock()
         for _, fn in ipairs(shotListeners) do pcall(fn, state) end
-        if not cfg.aim.silent then return nil end
-        if not Aim.point then return nil end
-        if cfg.aim.hitChance < 100 and math.random(1, 100) > cfg.aim.hitChance then return nil end
-        return Aim.point
+        local pt = decide()
+        pcall(settleShot, pt)
+        return pt
     end
 
     local env, ORIG = Game.env, Game.Crosshair
@@ -1458,6 +1991,8 @@ do
         sent = 0,
         mode = "idle",
         lastReload = 0,
+        autoLockedSince = 0,       -- os.clock() when the current auto target locked, 0 while none
+        autoLockKey = nil,         -- identity of that target so a switch resets the timer
     }
     E.fire = Fire
 
@@ -1588,14 +2123,36 @@ do
             return
         end
 
-        -- auto fire: a locked, visible target close to the crosshair
+        -- auto fire: a locked, visible target close to the crosshair. A raw
+        -- frame-by-frame test flickered on and off at the cone boundary and
+        -- fired bursts of one shot; the lock-time gate below keeps it stable.
         if cfg.fire.auto then
             local t = Aim.target
-            if t and t.visible and not t.downed and t.angle <= cfg.fire.autoCone then
-                Fire.mode = "auto"
-                if canSend(tool) and os.clock() - Aim.lastShotAt > 0.08 then send(st, tool, tt) end
+            local eligible = t and t.visible
+                and (not t.downed or (cfg.exp and cfg.exp.finishDowned))
+                and t.angle <= cfg.fire.autoCone
+            if eligible then
+                local key = t.player or t.char or t
+                if Fire.autoLockKey ~= key then
+                    Fire.autoLockKey = key
+                    Fire.autoLockedSince = os.clock()
+                end
+                local dwell = os.clock() - Fire.autoLockedSince
+                local sightNeeded = tonumber(cfg.fire.autoSight) or 0.06
+                if dwell >= sightNeeded then
+                    Fire.mode = "auto"
+                    if canSend(tool) and os.clock() - Aim.lastShotAt > 0.08 then send(st, tool, tt) end
+                else
+                    Fire.mode = "auto-arming"
+                end
                 return
+            else
+                Fire.autoLockKey = nil
+                Fire.autoLockedSince = 0
             end
+        else
+            Fire.autoLockKey = nil
+            Fire.autoLockedSince = 0
         end
         Fire.mode = "idle"
     end
@@ -1659,7 +2216,8 @@ do
     if Game.Kill then
         E.connect(Game.Kill.OnClientEvent, function(other, kind, assist)
             local k = tostring(kind)
-            local name = typeof(other) == "Instance" and (other.DisplayName ~= "" and other.DisplayName or other.Name) or "?"
+            local realName = typeof(other) == "Instance" and (other.DisplayName ~= "" and other.DisplayName or other.Name) or "?"
+            local name = E.nameOf(other, "an enemy")
             if k == "Kill" then
                 S.kills = S.kills + 1
                 S.streak = S.streak + 1
@@ -1670,7 +2228,7 @@ do
                 S.deaths = S.deaths + 1
                 S.streak = 0
             end
-            E.emit("kill", { kind = k, name = name, assist = assist, lastHit = S.lastHit })
+            E.emit("kill", { kind = k, name = name, realName = realName, assist = assist, lastHit = S.lastHit })
         end)
     end
 
@@ -2183,7 +2741,7 @@ do
         end
 
         -- name line with its state tags
-        local nameStr = esp.name and tag.display or nil
+        local nameStr = esp.name and (E.cfg.exp.streamer and "Enemy" or tag.display) or nil
         local spotted = esp.spotted and e.spotted == true
         local downed = e.downed == true
         if nameStr ~= tag.kName or spotted ~= tag.kSpotted or downed ~= tag.kDowned or size ~= tag.kSize then
@@ -2993,6 +3551,155 @@ do
     end)
 end
 
+-- ==== en_13_remotes.lua ====
+-- en_13_remotes: one shared, thin hook on outgoing FireServer calls.
+--
+-- Experiments need to change or drop a few of the game's own remote calls
+-- (melee, throw, fall damage). A __namecall hook can never be removed, so it is
+-- installed ONCE per session, pinned in getgenv, and does nothing but hand the
+-- call to whichever hub instance is loaded now. Rules learned the hard way:
+--   1. getnamecallmethod() is read on the first line. ANY method call made
+--      afterwards overwrites it.
+--   2. Once a handler has run it may have called methods, so the call leaves
+--      through a FireServer function captured at install, never through `old`
+--      (which would re-dispatch whatever method name was called last).
+--   3. Only RemoteEvent:FireServer is handled. InvokeServer yields, and a yield
+--      inside a namecall hook is not safe on every executor.
+--
+-- API
+--   E.remotes.on(name, fn)   fn(args) where args = { n = count, ... }. Return
+--                            "drop" to swallow the call, true to send the
+--                            (possibly edited) args table, or nil to leave the
+--                            call untouched. Several handlers per name run in
+--                            the order registered.
+--   E.remotes.log[name]      the last 6 calls as short argument summaries, for
+--                            reading back what a remote actually carries.
+do
+    local G = E.G
+    local X = E.X
+    local R = { watch = {}, handlers = {}, log = {}, installed = false }
+    E.remotes = R
+
+    local se = E.RS:FindFirstChild("ServerEvents")
+
+    -- short, method free description of one argument
+    local function describe(v, depth)
+        local ty = typeof(v)
+        if ty == "Instance" then return "Instance(" .. tostring(v) .. ")" end
+        if ty == "table" then
+            if depth >= 1 then return "table" end
+            local parts, count = {}, 0
+            for k, val in pairs(v) do
+                count = count + 1
+                if count > 6 then parts[#parts + 1] = "..." break end
+                parts[#parts + 1] = tostring(k) .. "=" .. describe(val, depth + 1)
+            end
+            return "{" .. table.concat(parts, ", ") .. "}"
+        end
+        if ty == "string" then return string.format("%q", string.sub(v, 1, 40)) end
+        return ty .. "(" .. tostring(v) .. ")"
+    end
+
+    local function record(name, args)
+        local list = R.log[name]
+        if not list then list = {} R.log[name] = list end
+        local parts = {}
+        for i = 1, math.min(args.n, 8) do parts[i] = describe(args[i], 0) end
+        list[#list + 1] = string.format("%.2f  %s", os.clock(), table.concat(parts, "  |  "))
+        if #list > 6 then table.remove(list, 1) end
+    end
+
+    -- called from the pinned shim with the remote and its packed arguments
+    function R.dispatch(remote, args)
+        local name = R.watch[remote]
+        if not name then return nil end
+        pcall(record, name, args)
+        local list = R.handlers[name]
+        if not list then return nil end
+        local changed = false
+        for _, fn in ipairs(list) do
+            local ok, res = pcall(fn, args)
+            if not ok then
+                E.fault("remote " .. name, res)
+            elseif res == "drop" then
+                return "drop"
+            elseif res == true then
+                changed = true
+            end
+        end
+        return changed and "send" or nil
+    end
+
+    local function install()
+        if R.installed then return true end
+        if rawget(G, "__ENT_NAMECALL") then R.installed = true return true end
+        if not (X.hookmetamethod and X.getnamecallmethod and X.checkcaller) then return false end
+        local probe = Instance.new("RemoteEvent")
+        local FIRE = probe.FireServer
+        probe:Destroy()
+        local wrap = X.newcclosure or function(f) return f end
+        local getMethod, isOurs = X.getnamecallmethod, X.checkcaller
+        local old
+        local ok = pcall(function()
+            old = X.hookmetamethod(game, "__namecall", wrap(function(self, ...)
+                local method = getMethod()
+                if method == "FireServer" and not isOurs() then
+                    local EE = rawget(G, "__ENTRENCHED")
+                    local RR = EE and EE.alive and EE.remotes
+                    if RR and RR.watch[self] then
+                        local args = table.pack(...)
+                        local okD, verdict = pcall(RR.dispatch, self, args)
+                        if okD and verdict == "drop" then return nil end
+                        if okD and verdict == "send" then
+                            return FIRE(self, table.unpack(args, 1, args.n))
+                        end
+                        return FIRE(self, ...)
+                    end
+                end
+                return old(self, ...)
+            end))
+        end)
+        if not ok or not old then return false end
+        G.__ENT_NAMECALL = true
+        R.installed = true
+        return true
+    end
+
+    -- watch a ServerEvents remote by name; installs the hook on first use
+    function R.on(name, fn)
+        local remote = se and se:FindFirstChild(name)
+        if not (remote and remote:IsA("RemoteEvent")) then
+            E.fault("remote " .. name, "not found in ServerEvents")
+            return false
+        end
+        if not install() then
+            E.fault("remote hook", "this executor has no namecall hook")
+            return false
+        end
+        R.watch[remote] = name
+        R.handlers[name] = R.handlers[name] or {}
+        table.insert(R.handlers[name], fn)
+        return true
+    end
+
+    -- log only, so the next session can read what a remote carries
+    function R.observe(name)
+        local remote = se and se:FindFirstChild(name)
+        if not (remote and remote:IsA("RemoteEvent")) then return false end
+        if not install() then return false end
+        R.watch[remote] = name
+        return true
+    end
+
+    E.cap.remoteHook = X.hookmetamethod ~= nil and X.getnamecallmethod ~= nil
+    E.onUnload(function()
+        -- the pinned shim stays, but with no watched remotes it passes every
+        -- call straight through
+        table.clear(R.watch)
+        table.clear(R.handlers)
+    end)
+end
+
 -- ==== en_13_worldfx.lua ====
 -- en_13_worldfx: camera field of view offset and a clear view of the battlefield.
 do
@@ -3125,6 +3832,2485 @@ do
     E.onUnload(restoreAll)
 end
 
+-- ==== en_14_exp_weapon.lua ====
+-- en_14_exp_weapon: shooting experiments. No spread, the game's own bullet
+-- magnetism, no recoil, faster reloads, instant aim and longer throws.
+--
+-- Everything here ships off and touches nothing until it is switched on, and
+-- every value it changes is written down first so turning a setting off or
+-- unloading the hub puts the game back exactly as it was. Each feature keeps
+-- one short line in E.expWeapon.status for hand testing.
+do
+    local Game, Aim = E.game, E.aim
+    local LP = E.LP
+    local cfg = E.cfg
+
+    local status = {
+        noSpread   = "off",
+        magnetism  = "off",
+        noRecoil   = "off",
+        fastReload = "off",
+        instantAim = "off",
+        longThrow  = "off",
+    }
+    E.expWeapon = { status = status }
+
+    local faulted = {}
+    local function faultOnce(label, err)
+        if faulted[label] then return end
+        faulted[label] = true
+        E.fault(label, err)
+    end
+
+    local function attempt(label, fn, ...)
+        local ok, err = pcall(fn, ...)
+        if not ok then faultOnce(label, err) end
+        return ok
+    end
+
+    ------------------------------------------------------------------------
+    -- No spread.
+    --
+    -- WeaponModule computes, for the shot it is about to send:
+    --     hipfirePenalty = 1 / SpreadDefault / 6
+    --     totalSpread    = (Bloom or SpreadDefault)
+    --                      + (aiming and standing still and 0 or hipfirePenalty)
+    -- so writing zero divides by zero and gives every hip shot an infinite cone.
+    -- While aiming the penalty term is already gone, so a tiny base is pure
+    -- gain. Otherwise x + 1/(6x) is smallest at x = 1/sqrt(6).
+    --
+    -- The patch runs inside the game's own Crosshair call, which is before the
+    -- cone is computed, and the restore is deferred so it lands after the shot
+    -- has been sent. shootEffect never yields in between.
+    ------------------------------------------------------------------------
+    local SPREAD_HIP = 0.4082482904638631
+    local patching, patched = false, 0
+
+    local function patchSpread(state)
+        if cfg.exp.noSpread ~= true or patching then return end
+        local tool = type(state) == "table" and rawget(state, "Tool") or nil
+        if typeof(tool) ~= "Instance" then tool = Game.equipped() end
+        if not tool then return end
+        local orig = tool:GetAttribute("SpreadDefault")
+        if type(orig) ~= "number" or orig <= 0 then return end
+
+        local aiming = tool:GetAttribute("Aiming") == true
+        local bloom = tool:FindFirstChild("Bloom")
+        local bloomOrig = (bloom and bloom:IsA("NumberValue")) and bloom.Value or nil
+
+        patching = true
+        tool:SetAttribute("SpreadDefault", aiming and 0.001 or SPREAD_HIP)
+        if bloomOrig ~= nil then bloom.Value = 0 end
+        patched = patched + 1
+        status.noSpread = "patched " .. patched .. " shots"
+
+        task.defer(function()
+            pcall(function()
+                if tool.Parent then tool:SetAttribute("SpreadDefault", orig) end
+                if bloomOrig ~= nil and bloom and bloom.Parent then bloom.Value = bloomOrig end
+            end)
+            patching = false
+        end)
+    end
+
+    Aim.onShot(function(state)
+        if cfg.exp.noSpread ~= true then return end
+        if not attempt("no spread", patchSpread, state) then patching = false end
+    end)
+
+    E.watch("exp.noSpread", function(on)
+        if on then
+            if patched == 0 then status.noSpread = "waiting for a shot" end
+        else
+            status.noSpread = "off"
+        end
+    end)
+
+    ------------------------------------------------------------------------
+    -- Native bullet magnetism. The game ships aim help for touch players
+    -- (bulletMagnetism, a 15 wide cone) and decides who gets it from an
+    -- invisible frame in its own HUD plus one attribute on PlayerClient.
+    --
+    -- Each original is saved at the moment WE first change it and cleared when
+    -- we hand it back, so a value we wrote can never be mistaken for the
+    -- game's own. The HUD is rebuilt on respawn, so while this is on it is
+    -- re-asserted on a slow loop.
+    ------------------------------------------------------------------------
+    local magSaved, hoverSaved = nil, nil
+
+    local function touchFlag()
+        local pg = LP:FindFirstChild("PlayerGui")
+        local gg = pg and pg:FindFirstChild("GameGui")
+        local hud = gg and gg:FindFirstChild("headsUpDisplay")
+        local pd = hud and hud:FindFirstChild("PlatformDetection")
+        local mobile = pd and pd:FindFirstChild("Mobile")
+        return (mobile and mobile:IsA("GuiObject")) and mobile or nil
+    end
+
+    local function playerClient()
+        local ps = LP:FindFirstChild("PlayerScripts")
+        local pc = ps and ps:FindFirstChild("PlayerClient")
+        return pc
+    end
+
+    local function applyMagnet()
+        local on = cfg.exp.magnetism == true
+        local mobile = touchFlag()
+        if mobile then
+            if on then
+                if magSaved == nil then magSaved = mobile.Visible end
+                if mobile.Visible ~= true then mobile.Visible = true end
+            elseif magSaved ~= nil then
+                if mobile.Visible ~= magSaved then mobile.Visible = magSaved end
+                magSaved = nil
+            end
+        elseif not on then
+            magSaved = nil
+        end
+
+        local pc = playerClient()
+        if pc then
+            if on then
+                if hoverSaved == nil then
+                    local cur = pc:GetAttribute("HoverAutoFire")
+                    hoverSaved = (cur == true)
+                end
+                if pc:GetAttribute("HoverAutoFire") ~= true then
+                    pc:SetAttribute("HoverAutoFire", true)
+                end
+            elseif hoverSaved ~= nil then
+                pc:SetAttribute("HoverAutoFire", hoverSaved)
+                hoverSaved = nil
+            end
+        end
+
+        if not on then
+            status.magnetism = "off"
+        elseif mobile then
+            status.magnetism = "on"
+        else
+            status.magnetism = "waiting for the game HUD"
+        end
+    end
+
+    E.watch("exp.magnetism", function() attempt("magnetism", applyMagnet) end)
+    E.loop("magnetism", function()
+        if cfg.exp.magnetism == true then
+            attempt("magnetism", applyMagnet)
+            return 3
+        end
+        return 2
+    end)
+
+    ------------------------------------------------------------------------
+    -- Per weapon patches: recoil and reload speed.
+    --
+    -- Recoil is read twice by the game: the first shot kick uses the Tool's
+    -- Recoil attribute live, and the sustained fire pattern is built FROM that
+    -- attribute when the weapon is equipped. Setting it to zero on every
+    -- weapon the player carries, before it is equipped, covers both. The
+    -- pattern already built for the weapon in hand is flattened as well, with
+    -- a copy kept so it can be put back.
+    --
+    -- Reload timing is almost certainly the server's decision. The client
+    -- values are lowered anyway, because the animation and the local gate read
+    -- them, and the hand test will show whether it changes anything.
+    ------------------------------------------------------------------------
+    local RELOAD_SCALE = 0.5
+    local toolRec = {}      -- tool -> { recoil, rtm, rt, conns = {} }
+
+    local function isFirearm(tool)
+        return typeof(tool) == "Instance" and tool:IsA("Tool")
+            and tool:GetAttribute("CanFire") ~= nil
+    end
+
+    local function flattenPattern(tool, rec)
+        local state = Game.stateOf(tool)
+        local pat = type(state) == "table" and rawget(state, "RecoilPattern") or nil
+        if type(pat) ~= "table" then return end
+        if not rec.pattern then
+            local copy = {}
+            for i, tier in ipairs(pat) do
+                if type(tier) == "table" then
+                    local t = {}
+                    for k, v in pairs(tier) do t[k] = v end
+                    copy[i] = t
+                end
+            end
+            if next(copy) == nil then return end
+            rec.pattern, rec.patternRef = copy, pat
+        end
+        -- tier shape is { startShot, kickUpTarget, recoveryTarget, smoothing, horizontal }.
+        -- The game's per-shot camera loop first eases toward tier[2] (upward
+        -- kick), then eases toward tier[3] (recovery, which is a NEGATIVE
+        -- value ~ -1 that pitches the view DOWN). Zeroing only [2] and [5]
+        -- was the "aim goes down when firing" bug: the second loop still ran
+        -- and pulled the camera into the dirt. Zero every axis of movement.
+        for _, tier in ipairs(pat) do
+            if type(tier) == "table" then
+                if type(tier[2]) == "number" then tier[2] = 0 end
+                if type(tier[3]) == "number" then tier[3] = 0 end
+                if type(tier[5]) == "number" then tier[5] = 0 end
+            end
+        end
+    end
+
+    local function restorePattern(rec)
+        local pat, copy = rec.patternRef, rec.pattern
+        if type(pat) ~= "table" or type(copy) ~= "table" then return end
+        for i, tier in ipairs(pat) do
+            local was = copy[i]
+            if type(tier) == "table" and type(was) == "table" then
+                for k, v in pairs(was) do tier[k] = v end
+            end
+        end
+        rec.pattern, rec.patternRef = nil, nil
+    end
+
+    local function applyTool(tool)
+        if not isFirearm(tool) then return end
+        local wantRecoil = cfg.exp.noRecoil == true
+        local wantReload = cfg.exp.fastReload == true
+        local rec = toolRec[tool]
+
+        if not (wantRecoil or wantReload) then
+            if rec then
+                if rec.recoil ~= nil then tool:SetAttribute("Recoil", rec.recoil) end
+                if rec.rtm ~= nil then tool:SetAttribute("ReloadTimeMultiplier", rec.rtm) end
+                if rec.rt ~= nil then tool:SetAttribute("ReloadTime", rec.rt) end
+                restorePattern(rec)
+                for _, c in ipairs(rec.conns) do pcall(function() c:Disconnect() end) end
+                toolRec[tool] = nil
+            end
+            return
+        end
+
+        if not rec then
+            rec = { conns = {} }
+            toolRec[tool] = rec
+            -- the server can write these attributes back at any time, so a
+            -- change that is not ours is re-applied
+            local c1 = tool:GetAttributeChangedSignal("Recoil"):Connect(function()
+                if cfg.exp.noRecoil == true and tool:GetAttribute("Recoil") ~= 0 then
+                    rec.recoil = tool:GetAttribute("Recoil")
+                    tool:SetAttribute("Recoil", 0)
+                end
+            end)
+            rec.conns[#rec.conns + 1] = c1
+        end
+
+        if wantRecoil then
+            local cur = tool:GetAttribute("Recoil")
+            if type(cur) == "number" and cur ~= 0 then
+                if rec.recoil == nil then rec.recoil = cur end
+                tool:SetAttribute("Recoil", 0)
+            end
+            flattenPattern(tool, rec)
+        elseif rec.recoil ~= nil then
+            tool:SetAttribute("Recoil", rec.recoil)
+            rec.recoil = nil
+            restorePattern(rec)
+        end
+
+        if wantReload then
+            local rtm = tool:GetAttribute("ReloadTimeMultiplier")
+            if type(rtm) == "number" and rtm > RELOAD_SCALE then
+                if rec.rtm == nil then rec.rtm = rtm end
+                tool:SetAttribute("ReloadTimeMultiplier", rtm * RELOAD_SCALE)
+            end
+            local rt = tool:GetAttribute("ReloadTime")
+            if type(rt) == "number" and rt > 0.2 then
+                if rec.rt == nil then rec.rt = rt end
+                tool:SetAttribute("ReloadTime", rt * RELOAD_SCALE)
+            elseif typeof(rt) == "Vector3" then
+                if rec.rt == nil then rec.rt = rt end
+                tool:SetAttribute("ReloadTime", rt * RELOAD_SCALE)
+            end
+        else
+            if rec.rtm ~= nil then tool:SetAttribute("ReloadTimeMultiplier", rec.rtm) rec.rtm = nil end
+            if rec.rt ~= nil then tool:SetAttribute("ReloadTime", rec.rt) rec.rt = nil end
+        end
+    end
+
+    local function carried()
+        local out = {}
+        local char = LP.Character
+        if char then
+            for _, c in ipairs(char:GetChildren()) do
+                if c:IsA("Tool") then out[#out + 1] = c end
+            end
+        end
+        local bp = LP:FindFirstChildOfClass("Backpack")
+        if bp then
+            for _, c in ipairs(bp:GetChildren()) do
+                if c:IsA("Tool") then out[#out + 1] = c end
+            end
+        end
+        return out
+    end
+
+    local restoreAllTools
+
+    local function applyAllTools()
+        if cfg.exp.noRecoil ~= true and cfg.exp.fastReload ~= true then
+            -- both off: hand every weapon back, carried or not
+            restoreAllTools()
+            status.noRecoil, status.fastReload = "off", "off"
+            return
+        end
+        for _, t in ipairs(carried()) do applyTool(t) end
+        -- a weapon that has been dropped or destroyed is forgotten
+        for tool, rec in pairs(toolRec) do
+            if not tool.Parent then
+                for _, c in ipairs(rec.conns) do pcall(function() c:Disconnect() end) end
+                toolRec[tool] = nil
+            end
+        end
+        local n = 0
+        for _ in pairs(toolRec) do n = n + 1 end
+        status.noRecoil = cfg.exp.noRecoil == true and ("on, " .. n .. " weapons") or "off"
+        status.fastReload = cfg.exp.fastReload == true and ("on, " .. n .. " weapons") or "off"
+    end
+
+    function restoreAllTools()
+        for tool, rec in pairs(toolRec) do
+            pcall(function()
+                if tool.Parent then
+                    if rec.recoil ~= nil then tool:SetAttribute("Recoil", rec.recoil) end
+                    if rec.rtm ~= nil then tool:SetAttribute("ReloadTimeMultiplier", rec.rtm) end
+                    if rec.rt ~= nil then tool:SetAttribute("ReloadTime", rec.rt) end
+                end
+                restorePattern(rec)
+            end)
+            for _, c in ipairs(rec.conns) do pcall(function() c:Disconnect() end) end
+        end
+        table.clear(toolRec)
+    end
+
+    E.watch("exp.noRecoil", function() attempt("no recoil", applyAllTools) end)
+    E.watch("exp.fastReload", function() attempt("fast reload", applyAllTools) end)
+
+    -- a new weapon, a respawn or an equip all need the patch re-applied, and
+    -- the pattern only exists once the weapon has been equipped at least once
+    E.loop("weapon patches", function()
+        if cfg.exp.noRecoil == true or cfg.exp.fastReload == true then
+            attempt("weapon patches", applyAllTools)
+            return 1
+        end
+        if next(toolRec) ~= nil then attempt("weapon patches", applyAllTools) end
+        return 2
+    end)
+
+    ------------------------------------------------------------------------
+    -- Instant aim. Every zoom in this game is a 0.2 second tween on the
+    -- camera. While this is on, the camera is written straight to the value
+    -- the game is easing toward for a quarter of a second after the aim state
+    -- changes, which skips the ease without fighting anything afterwards.
+    --
+    -- This runs BEFORE the hub's own field of view offset (ENT_FOV, camera
+    -- priority plus 8), so a user offset is still added on top.
+    ------------------------------------------------------------------------
+    local SNAP_TIME = 0.25
+    local BASE_FOV = 70
+    local snapUntil, snapTo, lastAiming = 0, nil, nil
+
+    local function scopeShowing()
+        local pg = LP:FindFirstChild("PlayerGui")
+        local sg = pg and pg:FindFirstChild("ScopeGui")
+        local screen = sg and sg:FindFirstChild("scopeScreen")
+        return screen ~= nil and screen.Visible == true
+    end
+
+    local function aimFov(tool, aiming)
+        if not aiming then return BASE_FOV end
+        if scopeShowing() then
+            local scoped = tool:GetAttribute("aimFOVScope")
+            if type(scoped) == "number" and scoped > 0 then return scoped end
+        end
+        local fov = tool:GetAttribute("aimFOV")
+        if type(fov) == "number" and fov > 0 then return fov end
+        return nil
+    end
+
+    local function instantAimStep()
+        local tool = Game.equipped()
+        if not tool then
+            lastAiming = nil
+            return
+        end
+        local aiming = tool:GetAttribute("Aiming") == true
+        if aiming ~= lastAiming then
+            lastAiming = aiming
+            local want = aimFov(tool, aiming)
+            if want then
+                snapTo = want
+                snapUntil = os.clock() + SNAP_TIME
+                status.instantAim = "snapped to " .. math.floor(want)
+            end
+        end
+        if snapTo and os.clock() < snapUntil then
+            local cam = workspace.CurrentCamera
+            if cam and math.abs(cam.FieldOfView - snapTo) > 0.01 then
+                cam.FieldOfView = snapTo
+            end
+        end
+    end
+
+    E.watch("exp.instantAim", function(on)
+        if on then
+            lastAiming = nil
+            status.instantAim = "on"
+            E.bind("ENT_INSTANTAIM", Enum.RenderPriority.Camera.Value + 7, function()
+                if cfg.exp.instantAim ~= true then return end
+                attempt("instant aim", instantAimStep)
+            end)
+        else
+            E.unbind("ENT_INSTANTAIM")
+            snapTo, snapUntil, lastAiming = nil, 0, nil
+            status.instantAim = "off"
+        end
+    end)
+
+    ------------------------------------------------------------------------
+    -- Long throw. Grenades and flares are the only tools with real gravity on
+    -- them, so they are recognised by that. The numbers the client holds are
+    -- raised while this is on; if the server builds the arc from its own copy
+    -- this changes nothing, which the hand test will show.
+    ------------------------------------------------------------------------
+    local THROW_SPEED, THROW_GRAVITY, THROW_RANGE = 1.6, 0.6, 2
+    local throwRec = {}     -- tool -> { velocity, gravity, range }
+    local throwObserved = false
+
+    local function isThrowable(tool)
+        if typeof(tool) ~= "Instance" or not tool:IsA("Tool") then return false end
+        if tool:GetAttribute("CanFire") ~= nil then return false end
+        local g = tool:GetAttribute("ProjectileGravity")
+        return typeof(g) == "Vector3" and g.Y < -1
+    end
+
+    local function applyThrow(tool)
+        if not isThrowable(tool) then return end
+        local on = cfg.exp.longThrow == true
+        local rec = throwRec[tool]
+        if on then
+            if rec then return end
+            rec = {}
+            local v = tool:GetAttribute("Velocity")
+            local g = tool:GetAttribute("ProjectileGravity")
+            local r = tool:GetAttribute("ProjectileMaxDistance")
+            if type(v) == "number" and v > 0 then
+                rec.velocity = v
+                tool:SetAttribute("Velocity", v * THROW_SPEED)
+            end
+            if typeof(g) == "Vector3" then
+                rec.gravity = g
+                tool:SetAttribute("ProjectileGravity", g * THROW_GRAVITY)
+            end
+            if type(r) == "number" and r > 0 then
+                rec.range = r
+                tool:SetAttribute("ProjectileMaxDistance", r * THROW_RANGE)
+            end
+            throwRec[tool] = rec
+        elseif rec then
+            if rec.velocity ~= nil then tool:SetAttribute("Velocity", rec.velocity) end
+            if rec.gravity ~= nil then tool:SetAttribute("ProjectileGravity", rec.gravity) end
+            if rec.range ~= nil then tool:SetAttribute("ProjectileMaxDistance", rec.range) end
+            throwRec[tool] = nil
+        end
+    end
+
+    local function applyAllThrow()
+        for _, t in ipairs(carried()) do applyThrow(t) end
+        -- a thrown or dropped tool is put back and forgotten
+        for tool in pairs(throwRec) do
+            if not tool.Parent then
+                throwRec[tool] = nil
+            elseif cfg.exp.longThrow ~= true then
+                applyThrow(tool)
+            end
+        end
+        local n = 0
+        for _ in pairs(throwRec) do n = n + 1 end
+        status.longThrow = cfg.exp.longThrow == true and ("on, " .. n .. " throwables") or "off"
+    end
+
+    local function restoreAllThrow()
+        for tool, rec in pairs(throwRec) do
+            pcall(function()
+                if tool.Parent then
+                    if rec.velocity ~= nil then tool:SetAttribute("Velocity", rec.velocity) end
+                    if rec.gravity ~= nil then tool:SetAttribute("ProjectileGravity", rec.gravity) end
+                    if rec.range ~= nil then tool:SetAttribute("ProjectileMaxDistance", rec.range) end
+                end
+            end)
+        end
+        table.clear(throwRec)
+    end
+
+    E.watch("exp.longThrow", function(on)
+        if on and not throwObserved and E.remotes and E.remotes.observe then
+            -- record what a real throw carries, so a later session can read it
+            throwObserved = E.remotes.observe("Throw") == true
+        end
+        attempt("long throw", applyAllThrow)
+    end)
+
+    E.loop("throwables", function()
+        if cfg.exp.longThrow == true then
+            attempt("long throw", applyAllThrow)
+            return 1.5
+        end
+        if next(throwRec) ~= nil then attempt("long throw", applyAllThrow) end
+        return 2
+    end)
+
+    ------------------------------------------------------------------------
+    -- Put everything back
+    ------------------------------------------------------------------------
+    E.onUnload(function()
+        pcall(function()
+            local wasMag = cfg.exp.magnetism
+            cfg.exp.magnetism = false
+            applyMagnet()
+            cfg.exp.magnetism = wasMag
+        end)
+        restoreAllTools()
+        restoreAllThrow()
+    end)
+end
+
+-- ==== en_15_exp_safety.lua ====
+-- en_15_exp_safety: server hop, rejoin, moderator alert and votekick alert.
+--
+-- Nothing in this part changes the game. It reads who is in the server,
+-- listens to the votekick broadcast, and moves you with TeleportService when
+-- asked. What it rests on:
+--   - A teleport call does not throw when Roblox refuses it. It returns
+--     normally and fires TeleportInitFailed a moment later, so a pcall proves
+--     nothing and every failure is taken from that signal instead.
+--   - Moderators in mod mode are invisible and carry the replicated Player
+--     attribute AEIgnore, which exempts them from the server's anti exploit.
+--     Mods are rank 248 or higher in the game's group (ModPanel IsModPanelUser).
+--   - ClientEvents.VoteKick drives a timed vote bar in InterfaceScript, but its
+--     arguments have never been captured, so every call is logged to
+--     E.exp.voteLog and read without assuming any shape.
+--
+-- The two alerts that ship on never install the namecall hook. Only "Leave
+-- when votekicked" does, the first time it is switched on, and all it does
+-- there is note when you send a votekick request yourself, so a vote you
+-- started or voted in is not mistaken for one against you.
+do
+    local Players, RS, LP, Http = E.Players, E.RS, E.LP, E.HttpService
+    local cfg = E.cfg
+    local X = E.X
+
+    E.exp = E.exp or {}
+    local Exp = E.exp
+
+    ------------------------------------------------------------------------
+    -- Small helpers
+    ------------------------------------------------------------------------
+    -- the toast part loads after this one, so it is looked up on every call
+    local function toast(title, body, kind)
+        if E.toast then E.try("safety toast", E.toast, title, body, kind) end
+    end
+
+    local function short(v, n)
+        local s = (string.gsub(tostring(v), "%s+", " "))
+        return string.sub(s, 1, n or 80)
+    end
+
+    -- Connections owned by one feature, so switching it off can drop exactly
+    -- its own without growing the hub wide cleanup list on every toggle.
+    local function link(list, signal, fn)
+        local ok, c = pcall(function() return signal:Connect(fn) end)
+        if ok and c then
+            list[#list + 1] = c
+            return c
+        end
+        return nil
+    end
+
+    local function unlinkAll(list)
+        for i = #list, 1, -1 do
+            local c = list[i]
+            pcall(function() c:Disconnect() end)
+            list[i] = nil
+        end
+    end
+
+    -- Runs fn on its own thread and stops waiting after `timeout` seconds. The
+    -- game's moderator modules may yield on web requests, and a worker must
+    -- never hang on one. A timed out thread is simply abandoned.
+    local function callTimed(timeout, fn, ...)
+        local args = table.pack(...)
+        local box = { done = false, ok = false, value = nil }
+        task.spawn(function()
+            local r = table.pack(pcall(fn, table.unpack(args, 1, args.n)))
+            box.ok, box.value, box.done = r[1], r[2], true
+        end)
+        local t0 = os.clock()
+        while not box.done and E.alive and os.clock() - t0 < timeout do
+            task.wait(0.1)
+        end
+        if not box.done then return false, "timed out", true end
+        return box.ok, box.value, false
+    end
+
+    local rng = Random.new()
+
+    local TS
+    local function teleportService()
+        if not TS then
+            local ok, s = pcall(game.GetService, game, "TeleportService")
+            if ok then TS = s end
+        end
+        return TS
+    end
+
+    ------------------------------------------------------------------------
+    -- Server list. The public games API pages 100 servers at a time; fullest
+    -- first means the first page is almost always enough.
+    ------------------------------------------------------------------------
+    local LIST_URL = "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&excludeFullGames=true&limit=100"
+
+    local function httpGet(url)
+        local ok, body = pcall(function() return game:HttpGet(url) end)
+        if ok and type(body) == "string" and #body > 0 then return body end
+        -- some executors throw from HttpGet on a non 200 reply, request does not
+        if X.request then
+            local ok2, res = pcall(X.request, { Url = url, Method = "GET" })
+            if ok2 and type(res) == "table" and type(res.Body) == "string" and #res.Body > 0 then
+                return res.Body
+            end
+        end
+        return nil
+    end
+
+    -- Ids of other public servers with room. Servers with a single free slot
+    -- are kept apart, because someone else often takes that slot during the
+    -- few seconds a teleport needs, and that fails as GameFull.
+    local function fetchServers()
+        local base = string.format(LIST_URL, game.PlaceId)
+        local roomy, tight = {}, {}
+        local cursor, why = nil, nil
+        for _ = 1, 3 do
+            local url = base
+            if cursor then url = url .. "&cursor=" .. Http:UrlEncode(cursor) end
+            local body = httpGet(url)
+            if not body then
+                why = "The server list could not be downloaded."
+                break
+            end
+            local ok, data = pcall(Http.JSONDecode, Http, body)
+            if not ok or type(data) ~= "table" then
+                why = "The server list came back unreadable."
+                break
+            end
+            if type(data.data) ~= "table" then
+                -- a rate limited reply is { errors = { ... } } with no data
+                if data.errors ~= nil then
+                    why = "Roblox is limiting server list requests right now."
+                else
+                    why = "The server list came back empty."
+                end
+                break
+            end
+            for _, s in ipairs(data.data) do
+                if type(s) == "table" and type(s.id) == "string" and s.id ~= game.JobId
+                    and type(s.playing) == "number" and type(s.maxPlayers) == "number" then
+                    local free = s.maxPlayers - s.playing
+                    if free >= 2 then
+                        roomy[#roomy + 1] = s.id
+                    elseif free >= 1 then
+                        tight[#tight + 1] = s.id
+                    end
+                end
+            end
+            cursor = type(data.nextPageCursor) == "string" and data.nextPageCursor or nil
+            if #roomy + #tight > 0 or not cursor then break end
+        end
+        return roomy, tight, why
+    end
+
+    ------------------------------------------------------------------------
+    -- Moves. One attempt at a time. An attempt may make a second move after a
+    -- refusal, and each move is numbered so a watchdog or retry left over from
+    -- an earlier move can tell it is stale.
+    ------------------------------------------------------------------------
+    local Hop = { attempt = nil, lastPress = -1e9, lastBusy = -1e9, failConn = nil, stateConn = nil }
+    local WATCHDOG = 25
+    local WATCHDOG_EXTRA = 20
+
+    local function pickServer(a)
+        for _, bucket in ipairs({ a.roomy, a.tight }) do
+            local open = {}
+            for _, id in ipairs(bucket) do
+                if not a.tried[id] then open[#open + 1] = id end
+            end
+            if #open > 0 then return open[rng:NextInteger(1, #open)] end
+        end
+        return nil
+    end
+
+    local function finish(a, failed)
+        if Hop.attempt ~= a then return end
+        Hop.attempt = nil
+        if failed and a.onFail then pcall(a.onFail) end
+    end
+
+    -- A successful teleport ends this script with the client, so still being
+    -- here long after a move means it silently never started. A move Roblox
+    -- has reported as under way (Player.OnTeleport) is only waiting on a slow
+    -- destination server, so it gets two extra waits before giving up.
+    local function armWatchdog(a)
+        a.move = a.move + 1
+        local mine = a.move
+        local function check(extra)
+            if not E.alive or Hop.attempt ~= a or a.move ~= mine then return end
+            if a.progress == mine and extra > 0 then
+                task.delay(WATCHDOG_EXTRA, check, extra - 1)
+                return
+            end
+            toast("Still in this server", "The move never started. Try again in a moment.", "warn")
+            finish(a, true)
+        end
+        task.delay(WATCHDOG, check, 2)
+    end
+
+    local function goPlace(a)
+        local ts = teleportService()
+        local ok, err = pcall(function() ts:Teleport(game.PlaceId, LP) end)
+        if not ok then
+            toast("Could not change server", "Roblox refused the move. " .. short(err), "warn")
+            finish(a, true)
+            return false
+        end
+        armWatchdog(a)
+        return true
+    end
+
+    local function goInstance(a, id)
+        a.tried[id] = true
+        local ts = teleportService()
+        local ok = pcall(function() ts:TeleportToPlaceInstance(game.PlaceId, id, LP) end)
+        if not ok then return goPlace(a) end
+        armWatchdog(a)
+        return true
+    end
+
+    local REASONS = {
+        GameFull     = "That server filled up.",
+        GameEnded    = "That server has closed.",
+        GameNotFound = "That server no longer exists.",
+        Unauthorized = "Roblox did not allow the move.",
+        Flooded      = "Too many moves in a short time.",
+    }
+
+    local function onInitFailed(player, result, message)
+        if player ~= LP then return end
+        local a = Hop.attempt
+        if not a then return end
+        local okName, name = pcall(function() return result.Name end)
+        name = okName and tostring(name) or tostring(result)
+        -- a second request while the first is still in flight; nothing failed
+        if name == "IsTeleporting" then return end
+
+        a.move = a.move + 1 -- the refused move's watchdog is now stale
+        local why = REASONS[name]
+        if not why then
+            why = (type(message) == "string" and message ~= "") and short(message, 100) or "Roblox refused the move."
+        end
+
+        -- asking again for a server you are not allowed back into cannot work,
+        -- and a public server instead would not be the rejoin that was asked for
+        if a.retried or (a.kind == "rejoin" and name == "Unauthorized") then
+            toast(a.kind == "rejoin" and "Could not rejoin" or "Could not change server", why, "warn")
+            finish(a, true)
+            return
+        end
+        a.retried = true
+
+        -- rejoining a server that has closed cannot work, so that one case
+        -- falls through to a fresh server instead of trying the same id again
+        local sameAgain = a.kind == "rejoin" and name ~= "GameEnded" and name ~= "GameNotFound"
+        if a.kind == "hop" then
+            toast("Could not join that server", why .. " Trying another one.", "info")
+        elseif sameAgain then
+            toast("Could not rejoin", why .. " Trying once more.", "info")
+        else
+            toast("Could not change server", why .. " Trying a fresh server.", "info")
+        end
+
+        task.delay(name == "Flooded" and 5 or 1.5, function()
+            if not E.alive or Hop.attempt ~= a then return end
+            if a.kind == "hop" then
+                local id = pickServer(a)
+                if id then goInstance(a, id) else goPlace(a) end
+            elseif sameAgain then
+                goInstance(a, game.JobId)
+            else
+                goPlace(a)
+            end
+        end)
+    end
+
+    local function ensureFailListener()
+        if not Hop.failConn then
+            local ts = teleportService()
+            if ts then Hop.failConn = E.connect(ts.TeleportInitFailed, onInitFailed) end
+        end
+        if not Hop.stateConn then
+            local okS, sig = pcall(function() return LP.OnTeleport end)
+            if okS and sig then
+                Hop.stateConn = E.connect(sig, function(state)
+                    local a = Hop.attempt
+                    -- Failed is left to TeleportInitFailed, which carries the reason
+                    if a and state ~= Enum.TeleportState.Failed then a.progress = a.move end
+                end)
+            end
+        end
+    end
+
+    -- `auto` is a move the hub starts itself (a moderator, a votekick). It
+    -- skips the double click guard but never runs beside another move; its
+    -- failure callback is chained onto the move already in flight instead.
+    local function begin(kind, auto, onFail)
+        local now = os.clock()
+        local cur = Hop.attempt
+        if cur then
+            if onFail then
+                local prev = cur.onFail
+                cur.onFail = function()
+                    if prev then pcall(prev) end
+                    pcall(onFail)
+                end
+            end
+            if not auto and now - Hop.lastBusy > 3 then
+                Hop.lastBusy = now
+                toast("Already changing server", "Give it a few seconds.", "info")
+            end
+            return nil
+        end
+        if not auto then
+            if now - Hop.lastPress < 4 then return nil end
+            Hop.lastPress = now
+        end
+        ensureFailListener()
+        local a = { kind = kind, tried = {}, roomy = {}, tight = {}, move = 0, retried = false, onFail = onFail }
+        Hop.attempt = a
+        return a
+    end
+
+    -- Join a different public server of this place. `reason` is only passed
+    -- by the hub's own alerts; the panel button calls it bare.
+    function Exp.hop(reason, onFail)
+        local a = begin("hop", reason ~= nil, onFail)
+        if not a then return false end
+        task.spawn(function()
+            -- an alert that starts a hop has already said so in its own toast
+            if reason == nil then
+                toast("Finding another server", "Looking for a public server with room.", "info")
+            end
+            local ok, roomy, tight, why = pcall(fetchServers)
+            if not E.alive or Hop.attempt ~= a then return end
+            if ok then
+                a.roomy, a.tight = roomy, tight
+            else
+                why = "The server list could not be read."
+            end
+            local id = pickServer(a)
+            if id then
+                local count = #a.roomy + #a.tight
+                toast("Joining another server",
+                    string.format("%d %s room. Picked one at random.", count, count == 1 and "server has" or "servers have"), "info")
+                goInstance(a, id)
+            else
+                toast("Joining any open server",
+                    (why or "No other public server has room right now.") .. " Roblox will pick one for you.", "info")
+                goPlace(a)
+            end
+        end)
+        return true
+    end
+
+    function Exp.rejoin()
+        local a = begin("rejoin", false, nil)
+        if not a then return false end
+        task.spawn(function()
+            -- an empty server shuts down the moment its last player leaves, so
+            -- asking for it back by id would only fail with GameEnded
+            local alone = #Players:GetPlayers() <= 1
+            if alone or game.JobId == "" then
+                a.kind = "fresh"
+                toast("Joining a fresh server",
+                    alone and "You are the only player here, and an empty server closes when you leave."
+                        or "This server cannot be rejoined directly.", "info")
+                goPlace(a)
+            else
+                toast("Rejoining this server", "You should be back in a few seconds.", "info")
+                goInstance(a, game.JobId)
+            end
+        end)
+        return true
+    end
+
+    ------------------------------------------------------------------------
+    -- Moderator alert
+    --
+    -- Two signals. AEIgnore is exact but only exists while a mod is actively
+    -- in mod mode. The rank check catches staff who are playing normally, and
+    -- is done the game's own way first (ModPanel's IsModPanelUser module) and
+    -- then straight from the group rank. Module signatures are unknown, so
+    -- only a boolean answer is ever believed, every call runs on a worker
+    -- thread with a timeout, and any error just moves on to the next route.
+    ------------------------------------------------------------------------
+    local MOD_RANK = 248
+    local GRACE = 3
+
+    local Mod = {
+        active = false,
+        conns = {},
+        perPlayer = {},   -- Player -> AEIgnore connection
+        known = {},       -- UserId -> { player, how }
+        toasted = {},     -- UserId -> true, once per player per load
+        verdict = {},     -- UserId -> true | false | "unknown" | "queued"
+        queue = {},
+        working = false,
+        leaving = false,
+    }
+    Exp.modLog = {}
+    Exp.modInfo = { route = "not checked yet", groupId = nil, groupSource = nil }
+
+    local function logMod(line)
+        local log = Exp.modLog
+        log[#log + 1] = string.format("%.1f  %s", os.clock(), line)
+        if #log > 12 then table.remove(log, 1) end
+    end
+
+    local function modPresent()
+        for _, k in pairs(Mod.known) do
+            if k.player and k.player.Parent == Players then return true end
+        end
+        return false
+    end
+
+    local considerLeave
+
+    local function flag(p, how)
+        local id = p.UserId
+        local k = Mod.known[id]
+        if k then
+            k.player = p
+            if how == "modmode" then k.how = how end
+        else
+            Mod.known[id] = { player = p, how = how }
+            logMod(string.format("user %d flagged by %s", id, how))
+        end
+        if not Mod.toasted[id] and (cfg.exp.modAlert or cfg.exp.modLeave) then
+            Mod.toasted[id] = true
+            local who = E.nameOf(p, "A moderator")
+            local body
+            if how == "modmode" then
+                body = who .. " is in mod mode, which makes them invisible."
+            else
+                body = who .. " is here. Moderators can spectate you and act on reports."
+            end
+            if cfg.exp.modLeave and not Mod.leaving then body = body .. " Leaving in a few seconds." end
+            toast("Moderator in your server", body, "warn")
+        end
+        considerLeave(false)
+    end
+
+    -- The short grace period is deliberate: it lets the toast be read, and it
+    -- respects a change of mind or a moderator who was only passing through.
+    considerLeave = function(fromToggle)
+        if not cfg.exp.modLeave or Mod.leaving or not modPresent() then return end
+        Mod.leaving = true
+        if fromToggle then
+            toast("Leaving this server", "A moderator is still here. Moving you in a few seconds.", "warn")
+        end
+        task.delay(GRACE, function()
+            if not E.alive then return end
+            if not cfg.exp.modLeave then
+                Mod.leaving = false
+                return
+            end
+            if not modPresent() then
+                Mod.leaving = false
+                toast("Staying in this server", "The moderator left before you did.", "info")
+                return
+            end
+            Exp.hop("moderator", function() Mod.leaving = false end)
+        end)
+    end
+
+    -- resolved once per load, on the worker thread
+    local checkers, groupId, resolved = {}, nil, false
+
+    local function asCallable(v, name)
+        if type(v) == "function" then return v, nil end
+        if type(v) ~= "table" then return nil, nil end
+        for _, key in ipairs({ name, "IsModPanelUser", "WaitForIsModPanelUser", "Check" }) do
+            local f = rawget(v, key)
+            if type(f) == "function" then return f, v end
+        end
+        local okM, mt = pcall(getmetatable, v)
+        local call = okM and type(mt) == "table" and rawget(mt, "__call") or nil
+        if type(call) == "function" then
+            return function(...) return call(v, ...) end, nil
+        end
+        return nil, nil
+    end
+
+    local function addChecker(fn, owner, name, yields)
+        checkers[#checkers + 1] = { fn = fn, owner = owner, name = name, yields = yields, misses = 0, timeouts = 0 }
+    end
+
+    local function resolve()
+        if resolved then return end
+        resolved = true
+
+        local panel = RS:FindFirstChild("ModPanel")
+        if not panel then
+            local ok, v = callTimed(9, RS.WaitForChild, RS, "ModPanel", 8)
+            panel = (ok and typeof(v) == "Instance") and v or nil
+        end
+        local utils = panel and panel:FindFirstChild("Utils")
+        local node = utils and utils:FindFirstChild("Mod")
+
+        local function fromModule(ms, name, yields)
+            if not (ms and ms:IsA("ModuleScript")) then return end
+            local ok, mod = callTimed(4, require, ms)
+            if not ok then return end
+            local fn, owner = asCallable(mod, name)
+            if fn then addChecker(fn, owner, name, yields) end
+        end
+
+        if node then
+            fromModule(node:FindFirstChild("IsModPanelUser"), "IsModPanelUser", false)
+            fromModule(node:FindFirstChild("WaitForIsModPanelUser"), "WaitForIsModPanelUser", true)
+            -- Mod may itself be a module holding both functions
+            if #checkers == 0 and node:IsA("ModuleScript") then
+                local ok, mod = callTimed(4, require, node)
+                if ok and type(mod) == "table" then
+                    for _, key in ipairs({ "IsModPanelUser", "WaitForIsModPanelUser" }) do
+                        local f = rawget(mod, key)
+                        if type(f) == "function" then addChecker(f, mod, key, key ~= "IsModPanelUser") end
+                    end
+                end
+            end
+        end
+
+        -- The group behind the rank. Moderators are ranked in the group that
+        -- owns the game, so that one is trusted first. Only a game owned by a
+        -- user falls back to reading a lone group sized number out of the
+        -- check's own constants and upvalues, with the place, universe and
+        -- owner ids ruled out so they cannot be mistaken for a group.
+        local creatorGroup
+        local notGroup = { [E.PLACE_ID] = true, [E.GAME_ID] = true }
+        pcall(function()
+            notGroup[game.PlaceId], notGroup[game.GameId] = true, true
+            if game.CreatorType == Enum.CreatorType.Group then
+                creatorGroup = game.CreatorId
+            else
+                notGroup[game.CreatorId] = true
+            end
+        end)
+        local dbg = type(debug) == "table" and debug or nil
+        local found, count = {}, 0
+        for _, reader in ipairs({ dbg and rawget(dbg, "getconstants"), dbg and rawget(dbg, "getupvalues") }) do
+            if type(reader) == "function" then
+                for _, c in ipairs(checkers) do
+                    local ok, list = pcall(reader, c.fn)
+                    if ok and type(list) == "table" then
+                        for _, v in pairs(list) do
+                            if type(v) == "number" and v >= 10000 and v < 1e12 and v % 1 == 0
+                                and not notGroup[v] and not found[v] then
+                                found[v] = true
+                                count = count + 1
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        if creatorGroup then
+            groupId = creatorGroup
+            Exp.modInfo.groupSource = found[creatorGroup] and "game owner, confirmed by the check" or "game owner"
+        elseif count == 1 then
+            for v in pairs(found) do groupId = v end
+            Exp.modInfo.groupSource = "check constants"
+        end
+        if not groupId and panel then
+            -- last resort: the rank cache may keep the id as a plain field
+            local subs = panel:FindFirstChild("Subsystems")
+            local cache = subs and subs:FindFirstChild("GroupRankCache")
+            if cache and cache:IsA("ModuleScript") then
+                local ok, mod = callTimed(4, require, cache)
+                if ok and type(mod) == "table" then
+                    for k, v in pairs(mod) do
+                        if type(k) == "string" and string.find(string.lower(k), "group", 1, true)
+                            and type(v) == "number" and v >= 1000 and v % 1 == 0 then
+                            groupId, Exp.modInfo.groupSource = v, "rank cache"
+                            break
+                        end
+                    end
+                end
+            end
+        end
+
+        Exp.modInfo.groupId = groupId
+        local names = {}
+        for _, c in ipairs(checkers) do names[#names + 1] = c.name end
+        Exp.modInfo.route = string.format("module checks: %s. group rank: %s.",
+            #names > 0 and table.concat(names, ", ") or "none",
+            groupId and tostring(groupId) or "none")
+        logMod(Exp.modInfo.route)
+    end
+
+    -- only a boolean counts as an answer; anything else means "this route
+    -- cannot tell", and a route that keeps failing is dropped for the session
+    local function ask(c, p)
+        if c.dead then return nil end
+        local ok, v, timedOut = callTimed(c.yields and 5 or 3, c.fn, p)
+        if ok and type(v) == "boolean" then return v end
+        if timedOut then
+            c.timeouts = c.timeouts + 1
+            if c.timeouts >= 2 then c.dead = true end
+            return nil
+        end
+        -- a method written with a colon wants its table first
+        if c.owner then
+            ok, v, timedOut = callTimed(3, c.fn, c.owner, p)
+            if ok and type(v) == "boolean" then return v end
+        end
+        c.misses = c.misses + 1
+        if c.misses >= 3 then c.dead = true end
+        return nil
+    end
+
+    local function evaluate(p)
+        resolve()
+        local plain, rank
+        for _, c in ipairs(checkers) do
+            if not c.yields then
+                local v = ask(c, p)
+                if v == true then return true, "module" end
+                if v == false then plain = false end
+            end
+        end
+        if groupId then
+            local ok, r = callTimed(8, p.GetRankInGroup, p, groupId)
+            if ok and type(r) == "number" then
+                if r >= MOD_RANK then return true, "rank" end
+                rank = r
+            end
+        end
+        -- the waiting check may block until something only mods ever get, so
+        -- it is asked only when nothing else could answer
+        if plain == nil and rank == nil then
+            for _, c in ipairs(checkers) do
+                if c.yields then
+                    local v = ask(c, p)
+                    if v ~= nil then return v, "module" end
+                end
+            end
+            return nil, "unknown"
+        end
+        return false, "clear"
+    end
+
+    local function drain()
+        while E.alive and Mod.active and #Mod.queue > 0 do
+            local p = table.remove(Mod.queue, 1)
+            if p.Parent == Players then
+                local ok, verdict, how = pcall(evaluate, p)
+                if not ok then
+                    Mod.verdict[p.UserId] = "unknown"
+                    logMod("check failed: " .. short(verdict))
+                else
+                    if verdict == nil then
+                        Mod.verdict[p.UserId] = "unknown"
+                    else
+                        Mod.verdict[p.UserId] = verdict
+                    end
+                    if verdict == true and Mod.active then flag(p, how) end
+                end
+            else
+                Mod.verdict[p.UserId] = nil
+            end
+            task.wait(0.2)
+        end
+        -- anyone still waiting is asked again the next time the alert is on
+        for _, p in ipairs(Mod.queue) do
+            if Mod.verdict[p.UserId] == "queued" then Mod.verdict[p.UserId] = nil end
+        end
+        table.clear(Mod.queue)
+        Mod.working = false
+    end
+
+    local function enqueue(p)
+        if p == LP then return end
+        local known = Mod.verdict[p.UserId]
+        if known == true then
+            -- a moderator already found this load, back in the server or seen
+            -- again after the alert was off: track the new Player object so
+            -- leaving still works, without asking the web again
+            local k = Mod.known[p.UserId]
+            flag(p, k and k.how or "module")
+            return
+        end
+        if known ~= nil then return end
+        Mod.verdict[p.UserId] = "queued"
+        Mod.queue[#Mod.queue + 1] = p
+        if not Mod.working then
+            Mod.working = true
+            task.spawn(drain)
+        end
+    end
+
+    local function inModMode(p)
+        local ok, v = pcall(p.GetAttribute, p, "AEIgnore")
+        return ok and v ~= nil and v ~= false
+    end
+
+    local function attach(p)
+        if p == LP or Mod.perPlayer[p] then return end
+        local ok, c = pcall(function()
+            return p:GetAttributeChangedSignal("AEIgnore"):Connect(function()
+                if Mod.active and inModMode(p) then flag(p, "modmode") end
+            end)
+        end)
+        if ok and c then Mod.perPlayer[p] = c end
+        if inModMode(p) then flag(p, "modmode") end
+    end
+
+    local function modOn()
+        if Mod.active then return end
+        Mod.active = true
+        link(Mod.conns, Players.PlayerAdded, function(p)
+            if not Mod.active then return end
+            attach(p)
+            enqueue(p)
+        end)
+        link(Mod.conns, Players.PlayerRemoving, function(p)
+            local c = Mod.perPlayer[p]
+            if c then
+                pcall(function() c:Disconnect() end)
+                Mod.perPlayer[p] = nil
+            end
+        end)
+        for _, p in ipairs(Players:GetPlayers()) do
+            attach(p)
+            enqueue(p)
+        end
+        considerLeave(false)
+    end
+
+    local function modOff()
+        if not Mod.active then return end
+        Mod.active = false
+        unlinkAll(Mod.conns)
+        for _, c in pairs(Mod.perPlayer) do
+            pcall(function() c:Disconnect() end)
+        end
+        table.clear(Mod.perPlayer)
+    end
+
+    local function refreshMod()
+        if E.inGame and (cfg.exp.modAlert or cfg.exp.modLeave) then modOn() else modOff() end
+    end
+    E.watch("exp.modAlert", refreshMod)
+    E.watch("exp.modLeave", function(on)
+        refreshMod()
+        if on then considerLeave(true) end
+    end)
+
+    ------------------------------------------------------------------------
+    -- Votekick alert
+    --
+    -- The vote sends several updates while its bar fills, so calls that arrive
+    -- within VOTE_WINDOW of each other are one vote and toast once. Players
+    -- are found in the arguments as a Player, a character, a user id or a
+    -- name (also inside a sentence), one table level deep, in the order they
+    -- appear. From that:
+    --   - only you named, or you named first: the vote is against you
+    --   - you and exactly one other player on the call that opens the vote:
+    --     treated as against you, the other most likely being who started it
+    --   - you named later in a vote about someone else, or beside several
+    --     players: most likely a list of voters, so it warns but never moves you
+    -- A votekick request you sent yourself shortly before or during the vote
+    -- means you started it or voted in it, and that always wins.
+    ------------------------------------------------------------------------
+    local VOTE_WINDOW = 15
+    local VOTE_LONGEST = 90
+    local SENT_LEAD = 10
+
+    local Vote = {
+        active = false,
+        conns = {},
+        guis = setmetatable({}, { __mode = "k" }),
+        gen = 0,
+        started = -1e9,
+        lastAt = -1e9,
+        key = nil,
+        told = false,
+        me = nil,          -- per vote: nil, "mentioned", "aimed" or "mine"
+        left = false,
+        retryAfter = 0,
+        sentAt = nil,      -- when you last sent ServerEvents.VoteKick, once watched
+        sendWatch = false,
+    }
+    Exp.voteLog = {}
+    Exp.voteInfo = { sendWatch = "not started" }
+
+    local function describe(v, depth)
+        local ty = typeof(v)
+        if ty == "Instance" then
+            local okC, cls = pcall(function() return v.ClassName end)
+            return (okC and tostring(cls) or "Instance") .. "(" .. short(v, 30) .. ")"
+        end
+        if ty == "table" then
+            if depth >= 1 then return "table" end
+            local parts, count = {}, 0
+            for k, val in pairs(v) do
+                count = count + 1
+                if count > 6 then
+                    parts[#parts + 1] = "..."
+                    break
+                end
+                parts[#parts + 1] = tostring(k) .. "=" .. describe(val, depth + 1)
+            end
+            return "{" .. table.concat(parts, ", ") .. "}"
+        end
+        if ty == "string" then return string.format("%q", string.sub(v, 1, 60)) end
+        return ty .. "(" .. tostring(v) .. ")"
+    end
+
+    local function escape(s)
+        return (string.gsub(s, "%W", "%%%0"))
+    end
+
+    -- Words a vote message or gui is likely to hold. A player who happens to
+    -- be called one of these is never matched by name, or every vote would
+    -- look like it names them.
+    local STOP = {
+        vote = true, votes = true, voted = true, kick = true, kicked = true, votekick = true,
+        yes = true, no = true, player = true, players = true, start = true, started = true,
+        ["end"] = true, ended = true, against = true, cancel = true, time = true, team = true,
+    }
+
+    -- Lower case names of everyone here, built at most once per call.
+    -- Usernames are letters, digits and underscores, so a whole word match
+    -- inside a sentence cannot fire on part of a longer name. Display names
+    -- are matched inside text only when they have that same shape, and
+    -- otherwise only when they are the entire string.
+    local function roster()
+        local list = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            local ok, name, display = pcall(function()
+                return string.lower(p.Name), string.lower(p.DisplayName)
+            end)
+            if ok then
+                local useDisplay = #display >= 3 and display ~= name and not STOP[display]
+                list[#list + 1] = {
+                    p = p,
+                    id = tostring(p.UserId),
+                    name = not STOP[name] and name or nil,
+                    display = useDisplay and display or nil,
+                    displayWord = useDisplay and string.match(display, "^[%w_]+$") ~= nil,
+                }
+            end
+        end
+        return list
+    end
+
+    -- where player r is named in the lower case text s, or nil
+    local function nameAt(s, r)
+        if s == r.id then return 1 end
+        if r.name then
+            if s == r.name then return 1 end
+            local at = string.find(s, "%f[%w_]" .. escape(r.name) .. "%f[^%w_]")
+            if at then return at end
+        end
+        if r.display then
+            if s == r.display then return 1 end
+            if r.displayWord then
+                local at = string.find(s, "%f[%w_]" .. escape(r.display) .. "%f[^%w_]")
+                if at then return at end
+            end
+        end
+        return nil
+    end
+
+    local function playerOf(inst)
+        if inst:IsA("Player") then return inst end
+        if inst:IsA("Humanoid") then inst = inst.Parent end
+        if inst and inst:IsA("Model") then return Players:GetPlayerFromCharacter(inst) end
+        return nil
+    end
+
+    -- Everyone the arguments name. `first` says whether you or someone else
+    -- was named first, so a payload that puts the target before the voters
+    -- can be read the right way round.
+    local function scan(args)
+        local found = { me = false, first = nil, others = {} }
+        local seen, list = {}, nil
+        local function note(p)
+            if typeof(p) ~= "Instance" then return end
+            if p == LP then
+                found.me = true
+                found.first = found.first or "me"
+            elseif not seen[p] then
+                seen[p] = true
+                found.others[#found.others + 1] = p
+                found.first = found.first or "other"
+            end
+        end
+        local function look(v)
+            local ty = typeof(v)
+            if ty == "Instance" then
+                local ok, p = pcall(playerOf, v)
+                if ok then note(p) end
+            elseif ty == "number" then
+                if v >= 1000 and v % 1 == 0 then
+                    local ok, p = pcall(Players.GetPlayerByUserId, Players, v)
+                    if ok then note(p) end
+                end
+            elseif ty == "string" and #v >= 3 and #v <= 200 then
+                list = list or roster()
+                local s = string.lower(v)
+                local hits = {}
+                for _, r in ipairs(list) do
+                    local at = nameAt(s, r)
+                    if at then hits[#hits + 1] = { at = at, p = r.p } end
+                end
+                if #hits > 1 then table.sort(hits, function(a, b) return a.at < b.at end) end
+                for _, h in ipairs(hits) do note(h.p) end
+            end
+        end
+        for i = 1, math.min(args.n or #args, 10) do
+            local v = args[i]
+            look(v)
+            if type(v) == "table" then
+                local count = 0
+                for k, inner in pairs(v) do
+                    count = count + 1
+                    if count > 24 then break end
+                    look(k)
+                    look(inner)
+                end
+            end
+        end
+        return found
+    end
+
+    -- a votekick request of your own went out shortly before or during this
+    -- vote, so you started it or voted in it
+    local function tookPart()
+        return Vote.sentAt ~= nil and Vote.sentAt >= Vote.started - SENT_LEAD
+    end
+
+    local function canLeave()
+        return not Vote.left and os.clock() >= Vote.retryAfter
+    end
+
+    local function leaveForVote()
+        if not canLeave() then return end
+        Vote.left = true
+        Exp.hop("votekick", function()
+            Vote.left = false
+            Vote.retryAfter = os.clock() + 8
+        end)
+    end
+
+    local function onVote(source, args)
+        if not Vote.active then return end
+        local found = scan(args)
+        local me, others = found.me, found.others
+
+        local parts = {}
+        for i = 1, math.min(args.n or #args, 8) do parts[i] = describe(args[i], 0) end
+        local log = Exp.voteLog
+        log[#log + 1] = string.format("%.1f  %s%s  %s", os.clock(), source,
+            me and " (mentions you)" or "", table.concat(parts, "  |  "))
+        if #log > 8 then table.remove(log, 1) end
+
+        local now = os.clock()
+        local key = nil
+        if found.first == "me" then
+            key = "you"
+        elseif found.first == "other" then
+            key = tostring(others[1].UserId)
+        end
+        -- A new vote starts after a quiet gap, or once the longest vote is
+        -- over. A later call naming the same player first is still the same
+        -- vote, such as a result sent when the timer runs out, so it does not
+        -- toast twice or move you on a vote that already ended.
+        local sameTarget = key ~= nil and key == Vote.key
+        local fresh = now - Vote.started > VOTE_LONGEST
+            or (now - Vote.lastAt > VOTE_WINDOW and not sameTarget)
+        Vote.lastAt = now
+        if fresh then
+            Vote.started, Vote.key = now, key
+            Vote.told, Vote.me, Vote.left = false, nil, false
+        elseif key and not Vote.key then
+            Vote.key = key
+        end
+
+        local alert, leave = cfg.exp.voteAlert, cfg.exp.voteLeave
+
+        if me then
+            -- decided once it is certain; a mere mention may still be upgraded
+            if Vote.me ~= "aimed" and Vote.me ~= "mine" then
+                local state
+                if tookPart() then
+                    state = "mine"
+                elseif #others == 0 or found.first == "me" or (fresh and #others == 1) then
+                    state = "aimed"
+                else
+                    state = "mentioned"
+                end
+                if state ~= Vote.me then
+                    local was = Vote.me
+                    Vote.me, Vote.told = state, true
+                    if state == "aimed" and (alert or leave) then
+                        local body = "Players may be voting to kick you. Turn on Leave when votekicked to move out automatically."
+                        if leave then
+                            body = canLeave() and "Moving you to another server now."
+                                or "Your last move did not work. Press Hop to try again."
+                        end
+                        toast("Votekick against you", body, "warn")
+                    elseif state == "mine" and alert and was == nil then
+                        toast("Votekick started", "It names you because you started it or voted in it.", "info")
+                    elseif state == "mentioned" and (alert or leave) then
+                        toast("Votekick mentions you",
+                            "Other players are named too, so it may not be about you."
+                                .. (leave and " You are staying for now." or ""),
+                            "warn")
+                    end
+                end
+            end
+        elseif not Vote.told then
+            Vote.told = true
+            if alert then
+                local body = "A vote to kick a player has started in this server."
+                if #others == 1 then
+                    body = E.nameOf(others[1], "Another player") .. " appears to be the target."
+                end
+                toast("Votekick started", body, "info")
+            end
+        end
+
+        if Vote.me == "aimed" and leave then leaveForVote() end
+    end
+
+    -- Installs the shared remote hook, so it waits until Leave when
+    -- votekicked is first switched on. It only notes the time of your own
+    -- request and never touches the call.
+    local function ensureSendWatch()
+        if Vote.sendWatch then return end
+        local R = E.remotes
+        if not (R and R.on) then return end
+        Vote.sendWatch = true
+        local ok = R.on("VoteKick", function()
+            Vote.sentAt = os.clock()
+            return nil
+        end)
+        Exp.voteInfo.sendWatch = ok and "watching your own votekick requests"
+            or "unavailable, so a vote you start yourself may be read as one against you"
+    end
+
+    -- Fallback for a remote that never fires: a GUI named like VoteKick being
+    -- shown. Event driven only. Just the transition to shown counts, because
+    -- a template that is already visible when the gui is cloned on respawn
+    -- would otherwise raise a false alarm every life.
+    local function voteNamed(name)
+        -- every gui the game creates passes through here, so reject most names
+        -- with a pattern that allocates nothing before building a new string
+        if not string.find(name, "[Vv][Oo][Tt][Ee]") then return false end
+        local n = (string.gsub(string.lower(name), "[%s_%-]", ""))
+        if not (string.find(n, "votekick", 1, true) or string.find(n, "kickvote", 1, true)) then
+            return false
+        end
+        -- the screen where you pick someone to vote against lists every player,
+        -- you included, so opening it must not read as a vote naming you
+        for _, word in ipairs({ "button", "menu", "list", "select", "picker" }) do
+            if string.find(n, word, 1, true) then return false end
+        end
+        return true
+    end
+
+    local function shown(inst)
+        local node = inst
+        while node and node ~= LP do
+            if node:IsA("LayerCollector") then return node.Enabled end
+            if node:IsA("GuiObject") and not node.Visible then return false end
+            node = node.Parent
+        end
+        return false
+    end
+
+    local function readGui(inst)
+        local args = { n = 1, inst.Name }
+        for _, d in ipairs(inst:GetDescendants()) do
+            if d:IsA("TextLabel") or d:IsA("TextButton") then
+                local t = d.Text
+                if t ~= "" then
+                    args.n = args.n + 1
+                    args[args.n] = t
+                    if args.n >= 10 then break end
+                end
+            end
+        end
+        return args
+    end
+
+    local function watchGui(inst)
+        if Vote.guis[inst] or not voteNamed(inst.Name) then return end
+        local prop
+        if inst:IsA("GuiObject") then
+            prop = "Visible"
+        elseif inst:IsA("LayerCollector") then
+            prop = "Enabled"
+        else
+            return
+        end
+        Vote.guis[inst] = true
+        -- drop connections whose gui has since been destroyed
+        if #Vote.conns > 64 then
+            for i = #Vote.conns, 1, -1 do
+                if not Vote.conns[i].Connected then table.remove(Vote.conns, i) end
+            end
+        end
+        local was = shown(inst)
+        link(Vote.conns, inst:GetPropertyChangedSignal(prop), function()
+            local now = shown(inst)
+            if now and not was then
+                -- the game fills in the names around the same moment it shows
+                -- the frame, so read the text a beat later
+                task.delay(0.15, function()
+                    if not (E.alive and Vote.active) then return end
+                    E.try("votekick gui", function()
+                        if shown(inst) then onVote("gui", readGui(inst)) end
+                    end)
+                end)
+            end
+            was = now
+        end)
+    end
+
+    local function voteOn()
+        if Vote.active then return end
+        Vote.active = true
+        Vote.gen = Vote.gen + 1
+        local gen = Vote.gen
+
+        task.spawn(function()
+            E.try("votekick remote", function()
+                local ce = RS:FindFirstChild("ClientEvents") or RS:WaitForChild("ClientEvents", 10)
+                local remote = ce and (ce:FindFirstChild("VoteKick") or ce:WaitForChild("VoteKick", 10))
+                if Vote.gen ~= gen or not Vote.active then return end
+                if not (remote and remote:IsA("RemoteEvent")) then
+                    Exp.voteLog[#Exp.voteLog + 1] = "ClientEvents.VoteKick was not found, only the gui fallback is watching"
+                    return
+                end
+                link(Vote.conns, remote.OnClientEvent, function(...)
+                    E.try("votekick alert", onVote, "remote", table.pack(...))
+                end)
+            end)
+        end)
+
+        task.spawn(function()
+            E.try("votekick gui watch", function()
+                local pg = LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui", 10)
+                if Vote.gen ~= gen or not Vote.active or not pg then return end
+                link(Vote.conns, pg.DescendantAdded, function(d)
+                    if Vote.active then pcall(watchGui, d) end
+                end)
+                for _, d in ipairs(pg:GetDescendants()) do pcall(watchGui, d) end
+            end)
+        end)
+    end
+
+    local function voteOff()
+        if not Vote.active then return end
+        Vote.active = false
+        Vote.gen = Vote.gen + 1
+        unlinkAll(Vote.conns)
+        table.clear(Vote.guis)
+    end
+
+    local function refreshVote()
+        if E.inGame and (cfg.exp.voteAlert or cfg.exp.voteLeave) then voteOn() else voteOff() end
+        if E.inGame and cfg.exp.voteLeave then ensureSendWatch() end
+    end
+    E.watch("exp.voteAlert", refreshVote)
+    E.watch("exp.voteLeave", function(on)
+        refreshVote()
+        -- switched on in the middle of a vote that is already against you
+        if on and Vote.me == "aimed" and canLeave() and os.clock() - Vote.lastAt < VOTE_WINDOW then
+            toast("Leaving this server", "The votekick against you is still running.", "warn")
+            leaveForVote()
+        end
+    end)
+
+    E.onUnload(function()
+        modOff()
+        voteOff()
+        Hop.attempt = nil
+    end)
+end
+
+-- ==== en_16_exp_player.lua ====
+-- en_16_exp_player: movement and gear experiments. No fall damage, safe
+-- sprint, instant prompts, melee reach and auto spot.
+--
+-- Everything here ships off and installs nothing until it is first switched
+-- on, so a player who never opens the Experiments page never gets the shared
+-- remote hook, a render bind or a loop from this part. Each feature keeps one
+-- short line in E.expPlayer.status so a hand test can read what happened.
+do
+    local Game, W = E.game, E.world
+    local LP, RS = E.LP, E.RS
+    local X = E.X
+    local cfg = E.cfg
+
+    local status = {
+        noFallDamage   = "off",
+        safeSprint     = "off",
+        instantPrompts = "off",
+        meleeReach     = "off",
+        autoSpot       = "off",
+    }
+    E.expPlayer = { status = status }
+
+    -- one recorded fault per label, so a failure that repeats every frame
+    -- cannot churn E.faults
+    local faulted = {}
+    local function faultOnce(label, err)
+        if faulted[label] then return end
+        faulted[label] = true
+        E.fault(label, err)
+    end
+
+    local clone = table.clone or function(t)
+        local c = {}
+        for k, v in pairs(t) do c[k] = v end
+        return c
+    end
+
+    ------------------------------------------------------------------------
+    -- No fall damage. The FallDamage LocalScript the game copies into every
+    -- character measures the landing itself and reports it by firing
+    -- ServerEvents.FallDMG. Nothing else tells the server about a fall, so a
+    -- report that never leaves means no damage. The preferred route drops the
+    -- call in the shared remote hook. Without a hook, the script is switched
+    -- off on each spawn instead and switched back on when this turns off.
+    ------------------------------------------------------------------------
+    local fall = {
+        route = nil,       -- nil until first enabled, then "hook" or "script"
+        dropped = 0,
+        scripts = {},      -- only the scripts we switched off
+        watching = false,
+    }
+
+    local function scriptEnabled(s)
+        local ok, v = pcall(function() return s.Enabled end)
+        if ok and type(v) == "boolean" then return v end
+        ok, v = pcall(function() return s.Disabled end)
+        if ok and type(v) == "boolean" then return not v end
+        return nil
+    end
+
+    -- Enabled on current engines, Disabled on older ones
+    local function setScriptEnabled(s, on)
+        if pcall(function() s.Enabled = on end) then return true end
+        return (pcall(function() s.Disabled = not on end))
+    end
+
+    local function fallScriptStatus()
+        status.noFallDamage = next(fall.scripts) and "on, the fall damage script is switched off"
+            or "on, waiting for the fall damage script"
+    end
+
+    local function muteFallScript(char)
+        if not char then return end
+        local s = char:FindFirstChild("FallDamage")
+        if not (s and s:IsA("BaseScript")) or fall.scripts[s] then return end
+        -- a script the game already turned off is not ours to turn back on
+        if scriptEnabled(s) ~= true then return end
+        if setScriptEnabled(s, false) then fall.scripts[s] = true end
+        fallScriptStatus()
+    end
+
+    local function unmuteFallScripts()
+        for s in pairs(fall.scripts) do
+            if s.Parent then setScriptEnabled(s, true) end
+        end
+        table.clear(fall.scripts)
+    end
+
+    local function watchSpawns()
+        if fall.watching then return end
+        fall.watching = true
+        E.connect(LP.CharacterAdded, function(char)
+            -- scripts from the last life are gone with their character
+            for s in pairs(fall.scripts) do
+                if not s.Parent then fall.scripts[s] = nil end
+            end
+            if not (cfg.exp.noFallDamage and fall.route == "script") then return end
+            task.spawn(function()
+                -- the script is copied in just after the character appears
+                local ok, s = pcall(char.WaitForChild, char, "FallDamage", 10)
+                if not (ok and s) then return end
+                if E.alive and cfg.exp.noFallDamage and fall.route == "script" then
+                    E.try("no fall damage", muteFallScript, char)
+                end
+            end)
+        end)
+    end
+
+    local function setNoFall(on)
+        if not on then
+            unmuteFallScripts()
+            status.noFallDamage = "off"
+            return
+        end
+        if not E.inGame then status.noFallDamage = "only works in ENTRENCHED" return end
+        if fall.route == nil then
+            local hooked = E.remotes ~= nil and E.remotes.on("FallDMG", function()
+                if not cfg.exp.noFallDamage then return nil end
+                fall.dropped = fall.dropped + 1
+                status.noFallDamage = "on, " .. fall.dropped .. " fall reports dropped"
+                return "drop"
+            end)
+            fall.route = hooked and "hook" or "script"
+            if not hooked and E.toast then
+                E.toast("No fall damage", "This executor cannot filter remotes, so the fall damage script is switched off instead.", "info")
+            end
+        end
+        if fall.route == "hook" then
+            status.noFallDamage = "on, " .. fall.dropped .. " fall reports dropped"
+        else
+            watchSpawns()
+            E.try("no fall damage", muteFallScript, LP.Character)
+            fallScriptStatus()
+        end
+    end
+
+    ------------------------------------------------------------------------
+    -- Safe sprint. The client anti cheat checks WalkSpeed once on spawn and
+    -- then every 4 seconds, and kicks above 23 on public servers or above
+    -- DefaultWalkSpeed + 9 on any other kind. DefaultWalkSpeed is 12 or 14 by
+    -- class and a legit sprint is DefaultWalkSpeed + 6, so the target is
+    -- DefaultWalkSpeed + 8.5 capped at 22.5. That one formula clears both
+    -- limits by at least half a stud, and every write is clamped again at the
+    -- single place WalkSpeed is written.
+    --
+    -- The game changes WalkSpeed for sprinting, aiming, crouching and carrying.
+    -- Its latest value is tracked by VALUE, like the FOV offset: anything the
+    -- Humanoid holds that is not our own last write is the game's intent, and
+    -- that value comes back as soon as you stop moving, crouch, sit, go down,
+    -- die, switch this off or unload.
+    ------------------------------------------------------------------------
+    local SPEED_CEILING = 22.5
+    local SPEED_HEADROOM = 8.5
+    local SPRINT_BIND = "ENT_SAFESPRINT"
+
+    local sprint = {
+        hum = nil,          -- the Humanoid the fields below belong to
+        intended = nil,     -- the game's own latest WalkSpeed
+        ours = nil,         -- our last write while it still stands, else nil
+        checkAt = 0,
+        eligible = false,   -- slow checks: alive, not downed, not in the lobby
+        target = nil,
+        serverType = nil,
+        serverTypeAt = -math.huge,
+    }
+
+    local function writeSpeed(hum, v)
+        if type(v) ~= "number" or v ~= v then return nil end
+        if v > SPEED_CEILING then v = SPEED_CEILING end
+        if v < 0 then v = 0 end
+        if not pcall(function() hum.WalkSpeed = v end) then return nil end
+        return v
+    end
+
+    -- give the game its value back, but only if our write is still the one
+    -- standing; if the game has written since, its value is already there
+    local function releaseSpeed()
+        local hum, ours, intended = sprint.hum, sprint.ours, sprint.intended
+        sprint.ours = nil
+        if not (hum and ours and intended) then return end
+        local ok, cur = pcall(function() return hum.WalkSpeed end)
+        if ok and type(cur) == "number" and math.abs(cur - ours) < 1e-3 then
+            writeSpeed(hum, intended)
+        end
+    end
+
+    local function serverType()
+        local now = os.clock()
+        if now - sprint.serverTypeAt < 10 then return sprint.serverType end
+        sprint.serverTypeAt = now
+        local ok, v = pcall(function()
+            local pss = workspace:FindFirstChild("PrivateServerSettings")
+            local st = pss and pss:FindFirstChild("ServerType")
+            return st and st.Value
+        end)
+        sprint.serverType = (ok and type(v) == "string") and v or nil
+        return sprint.serverType
+    end
+
+    local function sprintTarget(hum)
+        local dws = hum:GetAttribute("DefaultWalkSpeed")
+        if type(dws) ~= "number" or dws ~= dws or dws <= 0 then
+            -- off a public server the limit hangs off this value, so never guess it there
+            local st = serverType()
+            if st ~= nil and st ~= "Public" then return nil end
+            dws = 12
+        end
+        return math.min(SPEED_CEILING, dws + SPEED_HEADROOM)
+    end
+
+    local function sprintStep()
+        local char = LP.Character
+        local hum = sprint.hum
+        if not (hum and char and hum.Parent == char) then
+            hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum ~= sprint.hum then
+                releaseSpeed()
+                sprint.hum, sprint.intended, sprint.ours = hum, nil, nil
+                sprint.checkAt = 0
+            end
+            if not hum then
+                status.safeSprint = "on, waiting for your character"
+                return
+            end
+        end
+
+        local cur = hum.WalkSpeed
+        if not (sprint.ours and math.abs(cur - sprint.ours) < 1e-3) then
+            sprint.intended, sprint.ours = cur, nil
+        end
+        local intended = sprint.intended
+
+        local now = os.clock()
+        if now >= sprint.checkAt then
+            sprint.checkAt = now + 0.25
+            sprint.eligible = Game.isAlive(char) and not Game.isDowned(char) and not Game.inLobby(char)
+            sprint.target = sprint.eligible and sprintTarget(hum) or nil
+            if not sprint.eligible then
+                status.safeSprint = "on, paused while you are down, dead or in the lobby"
+            elseif not sprint.target then
+                status.safeSprint = "on, paused because this server's speed limit is unknown"
+            else
+                status.safeSprint = string.format("on, %.1f while you move (the game's own is %.1f)",
+                    sprint.target, intended)
+            end
+        end
+
+        -- A zero means the game is holding you still, so never move you then.
+        -- Cheapest checks first, since this runs every frame. Going down is
+        -- checked every frame too: a quarter second of a 22.5 crawl would be
+        -- plain to anyone watching.
+        local target = sprint.target
+        local boost = target ~= nil and intended > 0 and target > intended
+            and hum.MoveDirection.Magnitude > 0.05
+            and not hum.Sit and hum.SeatPart == nil
+            and hum.Health > 0
+            and hum:GetAttribute("Crouching") ~= true
+            and char:FindFirstChild("ReviveTime") == nil
+
+        if boost then
+            if not sprint.ours or math.abs(sprint.ours - math.min(target, SPEED_CEILING)) > 1e-3 then
+                sprint.ours = writeSpeed(hum, target)
+            end
+        elseif sprint.ours then
+            writeSpeed(hum, intended)
+            sprint.ours = nil
+        end
+    end
+
+    local function setSafeSprint(on)
+        if not on then
+            E.unbind(SPRINT_BIND)
+            releaseSpeed()
+            sprint.hum, sprint.intended = nil, nil
+            status.safeSprint = "off"
+            return
+        end
+        if not E.inGame then status.safeSprint = "only works in ENTRENCHED" return end
+        -- after the default character controls, so a WalkSpeed the game set
+        -- this frame is already visible when it is read
+        E.bind(SPRINT_BIND, Enum.RenderPriority.Character.Value + 5, function()
+            local ok, err = pcall(sprintStep)
+            if not ok then faultOnce("safe sprint", err) end
+        end)
+        status.safeSprint = "on"
+    end
+
+    ------------------------------------------------------------------------
+    -- Instant prompts. The hold timer runs on your own client, so a prompt
+    -- whose HoldDuration is zero finishes the moment you press. Prompts are
+    -- zeroed as they are shown; one that was already on screen when this was
+    -- switched on is zeroed when the hold starts, and if the executor can fire
+    -- prompts and that hold still has not finished a moment later, it is fired
+    -- directly. Originals are kept in a plain table and handed back as each
+    -- prompt hides, so it only ever holds what is on screen. A weak table can
+    -- lose the entry for a prompt that still exists, because the Lua handle of
+    -- an Instance can be collected while nothing in Lua refers to it.
+    ------------------------------------------------------------------------
+    local prompts = {
+        hooked = false,
+        saved = {},        -- prompt -> the game's HoldDuration, only prompts we zeroed
+        pending = {},      -- prompt -> token of the delayed direct fire
+        fired = 0,
+    }
+
+    local function zeroPrompt(prompt)
+        if typeof(prompt) ~= "Instance" or not prompt:IsA("ProximityPrompt") then return end
+        local cur = prompt.HoldDuration
+        if cur > 0 then
+            -- any non zero value is the game's latest, even on a prompt we zeroed before
+            prompts.saved[prompt] = cur
+            prompt.HoldDuration = 0
+        end
+    end
+
+    local function restorePrompt(prompt)
+        local orig = prompts.saved[prompt]
+        prompts.saved[prompt] = nil
+        prompts.pending[prompt] = nil
+        if orig and prompt.Parent and prompt.HoldDuration == 0 then
+            prompt.HoldDuration = orig
+        end
+    end
+
+    local function restoreAllPrompts()
+        for prompt in pairs(prompts.saved) do pcall(restorePrompt, prompt) end
+        table.clear(prompts.saved)
+        table.clear(prompts.pending)
+    end
+
+    local function hookPrompts()
+        if prompts.hooked then return true end
+        local ok, PPS = pcall(game.GetService, game, "ProximityPromptService")
+        if not (ok and PPS) then return false end
+        prompts.hooked = true
+
+        E.connect(PPS.PromptShown, function(prompt)
+            if not cfg.exp.instantPrompts then return end
+            E.try("instant prompts", zeroPrompt, prompt)
+        end)
+
+        E.connect(PPS.PromptHidden, function(prompt)
+            if prompts.saved[prompt] ~= nil then pcall(restorePrompt, prompt) end
+        end)
+
+        E.connect(PPS.PromptButtonHoldBegan, function(prompt, player)
+            if not cfg.exp.instantPrompts then return end
+            if player ~= nil and player ~= LP then return end
+            E.try("instant prompts", zeroPrompt, prompt)
+            local fire = X.fireproximityprompt
+            if not fire then return end
+            -- a short wait so a hold that the zero already finished is not
+            -- triggered a second time, which would undo a toggle style prompt
+            local token = {}
+            prompts.pending[prompt] = token
+            task.delay(0.1, function()
+                if prompts.pending[prompt] ~= token then return end
+                prompts.pending[prompt] = nil
+                if not (E.alive and cfg.exp.instantPrompts) then return end
+                local okLive, live = pcall(function() return prompt.Parent ~= nil and prompt.Enabled end)
+                if not (okLive and live) then return end
+                local okFire, err = pcall(fire, prompt)
+                if okFire then
+                    prompts.fired = prompts.fired + 1
+                    status.instantPrompts = "on, " .. prompts.fired .. " prompts fired directly"
+                else
+                    faultOnce("instant prompts fire", err)
+                end
+            end)
+        end)
+
+        E.connect(PPS.PromptTriggered, function(prompt)
+            prompts.pending[prompt] = nil
+        end)
+        return true
+    end
+
+    local function setInstantPrompts(on)
+        if not on then
+            restoreAllPrompts()
+            status.instantPrompts = "off"
+            return
+        end
+        if not E.inGame then status.instantPrompts = "only works in ENTRENCHED" return end
+        if not hookPrompts() then status.instantPrompts = "unavailable" return end
+        status.instantPrompts = X.fireproximityprompt and "on, with direct firing as a backup" or "on"
+    end
+
+    ------------------------------------------------------------------------
+    -- Melee reach. What ServerEvents.Melee carries has never been read, so
+    -- this only edits values that plainly name who was hit: a body part of a
+    -- character, a Humanoid, or a character Model. It looks at the top level
+    -- arguments, inside a plain table, and inside a small record in that table
+    -- (the shape Shoot uses for its hit list). Anything else passes through,
+    -- and E.remotes.log.Melee keeps the last few calls so the real shape can be
+    -- read after a test. A hit that already landed on a live enemy is kept.
+    -- This runs inside the namecall hook: no yields, no remote calls, nothing
+    -- that belongs to your own character is changed, and the game's own tables
+    -- are copied before any edit, never changed in place.
+    ------------------------------------------------------------------------
+    local melee = { route = nil, changed = 0 }
+    local VEC_SNAP = 8           -- a hit position this close to the struck part moves with it
+
+    -- the character a value points at, and how it points at it
+    local function resolve(v)
+        if typeof(v) ~= "Instance" then return nil end
+        if v:IsA("BasePart") then
+            local m = v:FindFirstAncestorOfClass("Model")
+            local hops = 0
+            while m and not m:FindFirstChildOfClass("Humanoid") and hops < 4 do
+                m = m:FindFirstAncestorOfClass("Model")
+                hops = hops + 1
+            end
+            if m and m:FindFirstChildOfClass("Humanoid") then return m, "part" end
+        elseif v:IsA("Humanoid") then
+            local m = v.Parent
+            if m and m.ClassName == "Model" then return m, "humanoid" end
+        elseif v.ClassName == "Model" and v:FindFirstChildOfClass("Humanoid") then
+            return v, "model"
+        end
+        return nil
+    end
+
+    local function plainTable(t, limit)
+        if getmetatable(t) ~= nil then return false end
+        -- the weapon state table travels by reference; never look inside it
+        if rawget(t, "Tool") ~= nil or rawget(t, "animationList") ~= nil then return false end
+        local n = 0
+        for _ in pairs(t) do
+            n = n + 1
+            if n > limit then return false end
+        end
+        return true
+    end
+
+    -- run fn over every value the handler may see, copying any table it
+    -- changes so the caller's original is left exactly as it was
+    local function walk(v, depth, fn)
+        if type(v) ~= "table" then return fn(v) end
+        if depth >= 2 or not plainTable(v, depth == 0 and 32 or 8) then return v, false end
+        local edits
+        for k, item in pairs(v) do
+            local nv, changed = walk(item, depth + 1, fn)
+            if changed then
+                edits = edits or {}
+                edits[k] = nv
+            end
+        end
+        if not edits then return v, false end
+        local copy = clone(v)
+        for k, nv in pairs(edits) do copy[k] = nv end
+        return copy, true
+    end
+
+    local function enemyByChar(model)
+        for _, e in ipairs(W.list) do
+            if e.char == model then return e end
+        end
+        return nil
+    end
+
+    -- downed enemies count; the world list already leaves out teammates,
+    -- the dead and anyone in the lobby
+    local function nearestEnemy(origin, range)
+        local best, bestD
+        for _, e in ipairs(W.list) do
+            local root, char, hum = e.root, e.char, e.hum
+            if root and root.Parent and char and char.Parent and hum and hum.Parent then
+                local d = (root.Position - origin).Magnitude
+                if d <= range and (not bestD or d < bestD) then best, bestD = e, d end
+            end
+        end
+        return best
+    end
+
+    local function meleeHandler(args)
+        if not cfg.exp.meleeReach then return nil end
+        local myChar = LP.Character
+        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if not myRoot then return nil end
+
+        -- pass 1: the first value that names someone other than you
+        local origModel, origPart
+        local function find(v)
+            if not origModel then
+                local m, kind = resolve(v)
+                if m and m ~= myChar then
+                    origModel = m
+                    if kind == "part" then origPart = v end
+                end
+            end
+            return v, false
+        end
+        for i = 1, args.n do walk(args[i], 0, find) end
+        if not origModel then
+            status.meleeReach = "on, the last swing named no target"
+            return nil
+        end
+
+        -- A swing that already hit a live enemy stays on them. The only edit
+        -- then is moving it off a part outside the whitelist, such as the
+        -- AENcD honeypot, onto the same enemy's root.
+        local enemy = enemyByChar(origModel)
+        local keepTarget = enemy ~= nil
+        if not enemy then
+            local range = math.clamp(tonumber(cfg.exp.meleeRange) or 12, 1, 30)
+            enemy = nearestEnemy(myRoot.Position, range)
+            if not enemy then
+                status.meleeReach = "on, no enemy within " .. range .. " studs"
+                return nil
+            end
+        end
+
+        local function partFor(name)
+            local p = Game.PARTS[name] and enemy.char:FindFirstChild(name)
+            if p and p:IsA("BasePart") then return p end
+            return enemy.root
+        end
+
+        local refPart = origPart or origModel:FindFirstChild("HumanoidRootPart")
+        local refPos = (refPart and refPart:IsA("BasePart")) and refPart.Position or nil
+        local anchor = origPart and partFor(origPart.Name) or enemy.root
+        local myPos, camPos = myRoot.Position, W.camPos
+
+        -- pass 2: swap only what points at the original target
+        local function swap(v)
+            local ty = typeof(v)
+            if ty == "Instance" then
+                local m, kind = resolve(v)
+                if m ~= origModel then return v, false end
+                if kind == "part" then
+                    if keepTarget and Game.PARTS[v.Name] then return v, false end
+                    local p = partFor(v.Name)
+                    return p, p ~= v
+                end
+                if keepTarget then return v, false end
+                if kind == "humanoid" then return enemy.hum, enemy.hum ~= v end
+                return enemy.char, enemy.char ~= v
+            elseif ty == "Vector3" and refPos and not keepTarget then
+                -- A short vector is a direction or offset, not a place in the
+                -- world. A position nearer you or the camera than the target
+                -- is where the swing came from, and stays.
+                if v.Magnitude < 1.5 then return v, false end
+                local d = (v - refPos).Magnitude
+                if d <= VEC_SNAP and d < (v - myPos).Magnitude
+                    and (not camPos or d < (v - camPos).Magnitude) then
+                    return anchor.Position, true
+                end
+            end
+            return v, false
+        end
+
+        local changed = false
+        for i = 1, args.n do
+            local nv, ch = walk(args[i], 0, swap)
+            if ch then
+                args[i] = nv
+                changed = true
+            end
+        end
+        if not changed then return nil end
+        melee.changed = melee.changed + 1
+        if keepTarget then
+            status.meleeReach = "on, kept a real hit off a hidden body part"
+        else
+            status.meleeReach = "on, " .. melee.changed .. " swings sent, last to " .. E.nameOf(enemy.player, "an enemy")
+        end
+        return true
+    end
+
+    local function setMeleeReach(on)
+        if not on then status.meleeReach = "off" return end
+        if not E.inGame then status.meleeReach = "only works in ENTRENCHED" return end
+        if melee.route == nil then
+            local hooked = E.remotes ~= nil and E.remotes.on("Melee", meleeHandler)
+            melee.route = hooked and "hook" or "none"
+        end
+        status.meleeReach = melee.route == "hook" and "on, waiting for a swing"
+            or "unavailable, this executor cannot filter remotes"
+    end
+
+    ------------------------------------------------------------------------
+    -- Auto spot. ServerEvents.Spot:InvokeServer(state, aimPoint) is what the
+    -- game's own spot key sends. The server works out who is at aimPoint by
+    -- itself and answers "Cannot" while the cooldown runs. It needs a tool
+    -- whose CanSpot attribute is true plus that tool's live state table. It is
+    -- a RemoteFunction and yields, so it runs on its own thread, one call at a
+    -- time, from a slow loop and never from a render step or a hook.
+    ------------------------------------------------------------------------
+    local SPOT_RANGE = 500       -- the game's own spot casts Crosshair's default 500 stud ray
+    local spot = {
+        started = false,
+        busy = nil,              -- token of the call in flight
+        busySince = 0,
+        nextAt = 0,
+        done = 0,
+        remote = nil,
+        tried = {},              -- player -> last attempt on them
+        noState = {},            -- tool -> when its state lookup may be tried again
+    }
+
+    local function spotRemote()
+        local r = spot.remote
+        if r and r.Parent then return r end
+        local se = RS:FindFirstChild("ServerEvents")
+        r = se and se:FindFirstChild("Spot")
+        spot.remote = (r and r:IsA("RemoteFunction")) and r or nil
+        return spot.remote
+    end
+
+    -- Prefers the tool in your hands. A failed state lookup can fall back to a
+    -- full getgc scan, so a tool that failed waits 15 seconds before the next
+    -- try, and at most one lookup runs per pass.
+    local function spotTool(char)
+        local now = os.clock()
+        for t, at in pairs(spot.noState) do
+            if not t.Parent or now >= at then spot.noState[t] = nil end
+        end
+        local candidates = {}
+        local held = char:FindFirstChildOfClass("Tool")
+        if held then candidates[1] = held end
+        local bp = LP:FindFirstChildOfClass("Backpack")
+        if bp then
+            for _, t in ipairs(bp:GetChildren()) do
+                if t:IsA("Tool") then candidates[#candidates + 1] = t end
+            end
+        end
+        local found = nil
+        for _, t in ipairs(candidates) do
+            if t:GetAttribute("CanSpot") == true then
+                found = found or t
+                if not spot.noState[t] then
+                    local st = Game.stateOf(t)
+                    if st then return t, st end
+                    spot.noState[t] = now + 15
+                    return t, nil
+                end
+            end
+        end
+        return found, nil
+    end
+
+    local function spotTarget()
+        local now = os.clock()
+        local best, bestPart, bestScore
+        for _, e in ipairs(W.list) do
+            if e.visible and not e.spotted and e.dist <= SPOT_RANGE
+                and now - (spot.tried[e.player] or -math.huge) > 6 then
+                local part = (e.visTorso and e.torso) or (e.visHead and e.head) or nil
+                if part and part.Parent then
+                    -- a downed enemy is only worth it when nobody standing is in sight
+                    local score = e.angle + (e.downed and 1000 or 0)
+                    if not bestScore or score < bestScore then
+                        best, bestPart, bestScore = e, part, score
+                    end
+                end
+            end
+        end
+        return best, bestPart
+    end
+
+    local function spotTick()
+        if not cfg.exp.autoSpot then return 0.5 end
+        local now = os.clock()
+        if spot.busy then
+            -- a reply that never arrives must not stop the feature for good
+            if now - spot.busySince < 10 then return 0.25 end
+            spot.busy = nil
+            spot.nextAt = now + 4
+        end
+        if now < spot.nextAt then return math.max(0.1, spot.nextAt - now) end
+
+        for p, at in pairs(spot.tried) do
+            if now - at > 30 or not p.Parent then spot.tried[p] = nil end
+        end
+
+        local remote = spotRemote()
+        if not remote then status.autoSpot = "unavailable, the spot remote was not found" return 5 end
+        local char = LP.Character
+        if not (char and Game.isAlive(char)) or Game.isDowned(char) or Game.inLobby(char) then
+            status.autoSpot = "on, waiting until you are deployed"
+            return 1
+        end
+        local tool, st = spotTool(char)
+        if not tool then status.autoSpot = "on, none of your tools can spot" return 1.5 end
+        if not st then status.autoSpot = "on, could not read the spotting tool's state" return 1.5 end
+        local e, part = spotTarget()
+        if not e then status.autoSpot = "on, no unspotted enemy in sight" return 0.5 end
+
+        local token = {}
+        spot.busy, spot.busySince = token, now
+        spot.tried[e.player] = now
+        local pos = part.Position
+        local name = E.nameOf(e.player, "an enemy")
+        task.spawn(function()
+            local ok, res = pcall(function() return remote:InvokeServer(st, pos) end)
+            if spot.busy ~= token or not E.alive then return end
+            spot.busy = nil
+            local t = os.clock()
+            if not ok or res == "Cannot" or res == false then
+                spot.nextAt = t + 4
+                if not ok then faultOnce("auto spot", res) end
+                if cfg.exp.autoSpot then
+                    status.autoSpot = ok and "on, the game said not yet, trying again in 4s"
+                        or "on, the spot call failed, trying again in 4s"
+                end
+            else
+                spot.done = spot.done + 1
+                spot.nextAt = t + 1.5
+                if cfg.exp.autoSpot then
+                    status.autoSpot = "on, spotted " .. name .. " (" .. spot.done .. " so far)"
+                end
+            end
+        end)
+        return 0.25
+    end
+
+    local function setAutoSpot(on)
+        if not on then status.autoSpot = "off" return end
+        if not E.inGame then status.autoSpot = "only works in ENTRENCHED" return end
+        if not spot.started then
+            spot.started = true
+            E.loop("auto spot", spotTick)
+        end
+        status.autoSpot = "on"
+    end
+
+    ------------------------------------------------------------------------
+    -- Settings. E.replay fires each of these once after load, so a saved
+    -- setting takes effect the same way a click does.
+    ------------------------------------------------------------------------
+    E.watch("exp.noFallDamage", setNoFall)
+    E.watch("exp.safeSprint", setSafeSprint)
+    E.watch("exp.instantPrompts", setInstantPrompts)
+    E.watch("exp.meleeReach", setMeleeReach)
+    E.watch("exp.autoSpot", setAutoSpot)
+
+    -- remote handlers are cleared by en_13 and binds by the boot maid; what
+    -- is left is putting the game's own values back
+    E.onUnload(function()
+        E.unbind(SPRINT_BIND)
+        pcall(releaseSpeed)
+        pcall(restoreAllPrompts)
+        pcall(unmuteFallScripts)
+    end)
+end
+
 -- ==== en_20_ui_core.lua ====
 -- en_20_ui_core: screens, the Alt gated pointer, window shell, tabs and pages.
 --
@@ -3145,6 +6331,39 @@ do
 
     local UI = { altHeld = false, clickable = false, hoverables = {}, tabs = {}, pages = {} }
     E.ui = UI
+
+    ------------------------------------------------------------------------
+    -- Mobile detection. Roblox marks the platform through UserInputService
+    -- capabilities, not viewport size: a phone with a keyboard case would
+    -- still be a phone. TouchEnabled without MouseEnabled is the honest
+    -- signal; a user override in the config wins either way.
+    --
+    -- Consequences:
+    --   * clickable is forced on. Touch never locks the cursor, so the Alt
+    --     gate has no purpose and would just hide taps.
+    --   * scale gets a small boost so 22 px toggles land closer to a fingertip.
+    --   * the header hint says "Tap" instead of "Hold Alt".
+    ------------------------------------------------------------------------
+    local function detectMobile()
+        local m = cfg.mobile
+        if m.force == true then return true end
+        if m.autoDetect == false then return false end
+        return UIS.TouchEnabled == true and UIS.MouseEnabled ~= true
+    end
+    UI.isMobile = detectMobile()
+    UI.mobileBoost = 1.15         -- read by the rescale formula in this file and the pill
+
+    local mobileListeners = {}
+    function UI.onMobile(fn) mobileListeners[#mobileListeners + 1] = fn end
+    local function reMobile()
+        local was = UI.isMobile
+        UI.isMobile = detectMobile()
+        if UI.isMobile ~= was then
+            for _, fn in ipairs(mobileListeners) do E.try("mobile listener", fn, UI.isMobile) end
+        end
+    end
+    E.watch("mobile.force", reMobile)
+    E.watch("mobile.autoDetect", reMobile)
 
     ------------------------------------------------------------------------
     -- Instance helper
@@ -3307,6 +6526,9 @@ do
     end
 
     local function setClickable(on)
+        -- touch has no locked cursor, so the panel is ALWAYS clickable there.
+        -- The Alt gate is a desktop concept and would silently swallow taps.
+        if UI.isMobile then on = true end
         if UI.clickable == on then return end
         UI.clickable = on
         UI.syncInteract()
@@ -3479,7 +6701,9 @@ do
     local function viewportScale()
         local cam = workspace.CurrentCamera
         local vy = cam and cam.ViewportSize.Y or 1080
-        return math.clamp(vy / 1080, 0.8, 1.4) * math.clamp(cfg.ui.scale, 0.7, 1.4)
+        local base = math.clamp(vy / 1080, 0.8, 1.4) * math.clamp(cfg.ui.scale, 0.7, 1.4)
+        if UI.isMobile then base = base * UI.mobileBoost end
+        return base
     end
     function UI.rescale() Anim.to(scale, "Scale", viewportScale(), "panel") end
     scale.Scale = viewportScale()
@@ -3557,8 +6781,8 @@ do
         ZIndex = 7,
     })
 
-    -- header right: Alt hint, then window buttons
-    local hint = UI.text(header, "Hold Alt to click", "small", {
+    -- header right: platform hint, then window buttons
+    local hint = UI.text(header, UI.isMobile and "Tap to interact" or "Hold Alt to click", "small", {
         AnchorPoint = Vector2.new(1, 0.5),
         Position = UDim2.new(1, -96, 0.5, 0),
         Size = UDim2.fromOffset(160, 20),
@@ -3567,8 +6791,25 @@ do
         ZIndex = 6,
     })
     UI.hint = hint
+
+    local function paintHint()
+        if UI.isMobile then
+            hint.Text = "Tap to interact"
+            Anim.to(hint, "TextTransparency", 1, "fade")
+        else
+            hint.Text = "Hold Alt to click"
+            Anim.to(hint, "TextTransparency", UI.clickable and 1 or 0, "fade")
+        end
+    end
+    paintHint()
     UI.onClickable(function(on)
+        if UI.isMobile then return end
         Anim.to(hint, "TextTransparency", on and 1 or 0, "fade")
+    end)
+    UI.onMobile(function()
+        paintHint()
+        -- panel rescales the moment the layout changes so the touch boost lands
+        if UI.rescale then UI.rescale() end
     end)
 
     local function headerButton(iconName, x, onClick)
@@ -3783,13 +7024,21 @@ do
     -- Dragging: header only, only while Alt is held, clamped to the screen
     ------------------------------------------------------------------------
     local drag
+    local DRAG_INPUTS = {
+        [Enum.UserInputType.MouseButton1] = true,
+        [Enum.UserInputType.Touch] = true,
+    }
+    local DRAG_MOVES = {
+        [Enum.UserInputType.MouseMovement] = true,
+        [Enum.UserInputType.Touch] = true,
+    }
     header.InputBegan:Connect(function(input)
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1 or not UI.clickable then return end
+        if not DRAG_INPUTS[input.UserInputType] or not UI.clickable then return end
         local m = UI.mouse()
-        drag = { start = m, origin = holder.Position }
+        drag = { start = m, origin = holder.Position, kind = input.UserInputType }
     end)
     E.connect(UIS.InputChanged, function(input)
-        if not drag or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+        if not drag or not DRAG_MOVES[input.UserInputType] then return end
         local m = UI.mouse()
         local d = m - drag.start
         local o = drag.origin
@@ -3807,7 +7056,9 @@ do
         return x, y
     end
     E.connect(UIS.InputEnded, function(input)
-        if drag and input.UserInputType == Enum.UserInputType.MouseButton1 then
+        if drag and (input.UserInputType == drag.kind
+            or input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch) then
             drag = nil
             task.delay(0.15, function()
                 local x, y = clampToScreen()
@@ -5024,7 +8275,7 @@ do
         if at and type(lh.dist) == "number" and now - at <= DIST_WINDOW then
             dist = lh.dist
         else
-            dist = victimDistance(name)
+            dist = victimDistance(tostring(info.realName or name))
         end
 
         local body
@@ -5082,7 +8333,9 @@ do
         UI.toggle(f, "Hold to fire", "fire.rapid",
             "Bolt action rifles keep firing while you hold the button, each shot sent the moment the server allows it. Automatic weapons already fire while held.")
         UI.toggle(f, "Auto fire", "fire.auto", "Fires when a visible target is inside the cone below.")
-        UI.slider(f, "Auto fire cone", "fire.autoCone", 1, 30, 1, " deg")
+        UI.slider(f, "Auto fire cone", "fire.autoCone", 1, 60, 1, " deg")
+        UI.slider(f, "Lock time before firing", "fire.autoSight", 0, 0.4, 0.01, " s",
+            "The target must sit inside the cone for at least this long. A small value stops it firing bursts of one at the cone edge.")
         UI.toggle(f, "Auto reload", "fire.autoReload", "Reloads as soon as the magazine runs empty.")
     end
 
@@ -5234,6 +8487,60 @@ do
     end
 
     ------------------------------------------------------------------------
+    -- Experiments: untested ideas. Each one may do nothing on the live server,
+    -- so the page says so plainly and everything that changes gameplay is off.
+    ------------------------------------------------------------------------
+    local lab = UI.addTab("Experiments", "i_lab")
+    do
+        local intro = UI.section(lab, "Read this first",
+            "These are untested ideas. Some may do nothing, and some are easier for other players to notice. Turn on one at a time and see what changes.")
+        UI.note(intro, "If something feels wrong, turn it off again. Every change here is undone when you switch it off or unload the hub.")
+
+        local s = UI.section(lab, "Shooting")
+        UI.toggle(s, "No spread", "exp.noSpread",
+            "Removes the random spread on each shot, including when you shoot without aiming.")
+        UI.toggle(s, "Game bullet magnetism", "exp.magnetism",
+            "Turns on the aim help the game already gives phone players, which pulls shots toward nearby enemies.")
+        UI.toggle(s, "No recoil", "exp.noRecoil", "Stops your view kicking up when you fire.")
+        UI.toggle(s, "Faster reload", "exp.fastReload", "Asks the game for shorter reloads. The server may not allow it.")
+        UI.toggle(s, "Instant aim", "exp.instantAim", "Zooms in straight away when you aim down sights, instead of easing in.")
+        UI.toggle(s, "Finish downed enemies", "exp.finishDowned",
+            "Silent aim also targets downed enemies, and goes for them first so they cannot be revived.")
+        UI.toggle(s, "Self tuning lead", "exp.adaptiveLead",
+            "Learns from your hits and misses how far ahead of moving targets to aim, and adjusts as you play.")
+
+        local m = UI.section(lab, "Movement and gear")
+        UI.toggle(m, "No fall damage", "exp.noFallDamage", "You take no damage from falling.")
+        UI.toggle(m, "Safe sprint", "exp.safeSprint",
+            "Keeps you just under the game's speed limit while you move. Going over the limit gets you kicked, so it never does.")
+        UI.toggle(m, "Long throw", "exp.longThrow", "Throws grenades and flares further.")
+        UI.toggle(m, "Melee reach", "exp.meleeReach",
+            "Your spade and bayonet hits reach the nearest enemy within the distance below.")
+        UI.slider(m, "Melee distance", "exp.meleeRange", 6, 30, 1, " studs")
+        UI.toggle(m, "Instant prompts", "exp.instantPrompts",
+            "Hold prompts finish straight away, such as reviving a teammate.")
+
+        local t = UI.section(lab, "Team")
+        UI.toggle(t, "Auto spot", "exp.autoSpot",
+            "Spots every enemy you can see for your whole team, as often as the game allows.")
+
+        local g = UI.section(lab, "Safety")
+        UI.toggle(g, "Moderator alert", "exp.modAlert", "Warns you when a moderator is in your server.")
+        UI.toggle(g, "Leave when a moderator joins", "exp.modLeave",
+            "Moves you to another server as soon as a moderator is detected.")
+        UI.toggle(g, "Votekick alert", "exp.voteAlert", "Warns you when a votekick starts.")
+        UI.toggle(g, "Leave when votekicked", "exp.voteLeave",
+            "Moves you to another server when a votekick starts against you.")
+        UI.toggle(g, "Streamer mode", "exp.streamer", "Hides real player names in the ESP, the kill feed and the minimised bar.")
+        UI.button(g, "Join another server", "Hop", function()
+            if E.exp and E.exp.hop then E.exp.hop() end
+        end)
+        UI.button(g, "Rejoin this server", "Rejoin", function()
+            if E.exp and E.exp.rejoin then E.exp.rejoin() end
+        end)
+    end
+
+    ------------------------------------------------------------------------
     -- Settings
     ------------------------------------------------------------------------
     local settings = UI.addTab("Settings", "i_settings")
@@ -5251,8 +8558,25 @@ do
         UI.keybind(k, "Show or hide panel", "keys.panel")
         UI.keybind(k, "Toggle silent aim", "keys.silent")
         UI.keybind(k, "Toggle ESP", "keys.esp")
+        UI.keybind(k, "Toggle auto fire", "keys.autoFire")
+
+        local mob = UI.section(settings, "Mobile",
+            UI.isMobile
+                and "This device was detected as mobile. Layout, tap targets and the cursor gate are already adjusted."
+                or "Force these on to preview or test the mobile layout on a desktop.")
+        UI.toggle(mob, "Auto-detect mobile", "mobile.autoDetect",
+            "When on, the hub follows the input hardware. Turn off to lock the layout to whichever platform Force says.")
+        UI.toggle(mob, "Force mobile layout", "mobile.force",
+            "Overrides detection. Useful when a controller is plugged in but you want the touch layout.")
+        UI.toggle(mob, "Floating open button", "mobile.floatButton",
+            "Shows a small tap-to-open chip when the panel is minimised. On desktop the panel key is enough.")
+        UI.toggle(mob, "Prefer touch aim help", "mobile.magnetism",
+            "When you switch mobile on the hub will also turn on the game's own bullet magnetism from the Experiments page. Turn this off to opt out.")
 
         local h = UI.section(settings, "Hub")
+        UI.button(h, "What's new", "Open", function()
+            if UI.showChangelog then UI.showChangelog() end
+        end, "Shows the changelog for every version, newest first.")
         UI.button(h, "Save settings now", "Save", function()
             E.save(true)
             if E.notify then E.notify("Settings saved") end
@@ -5270,6 +8594,81 @@ do
         cap("Weapon control", E.cap.weaponModule and E.cap.stateLookup)
         cap("Graphics", E.cap.sprites)
         UI.note(h, "Version " .. E.version .. ".  " .. table.concat(caps, ",  ") .. ".")
+
+        ------------------------------------------------------------------------
+        -- Diagnostics: live text lines pulled from the running features, so a
+        -- user can tell WHY silent aim missed instead of guessing.
+        ------------------------------------------------------------------------
+        local diag = UI.section(settings, "Diagnostics", "Live readings from the running features.")
+        local function line(label)
+            local r = UI.row(diag, label, nil, 220)
+            local v = E.T
+            local lbl = UI.new("TextLabel", {
+                BackgroundTransparency = 1,
+                AnchorPoint = Vector2.new(1, 0),
+                Position = UDim2.new(1, -16, 0, 0),
+                Size = UDim2.fromOffset(300, E.T.row),
+                Text = "",
+                TextXAlignment = Enum.TextXAlignment.Right,
+                TextYAlignment = Enum.TextYAlignment.Center,
+                TextColor3 = E.T.dim,
+                ZIndex = 10,
+            }, r)
+            E.T.applyType(lbl, "value")
+            return lbl
+        end
+        local diagRoute   = line("Silent aim route")
+        local diagShots   = line("Shots seen through hook")
+        local diagLead    = line("Adaptive lead")
+        local diagPlatform = line("Platform")
+        local diagFire     = line("Fire mode")
+        local diagExec     = line("Executor")
+
+        local function fmtRoute(r)
+            if r == "global"       then return "Global swap (ready)"
+            elseif r == "hook"     then return "hookfunction (ready)"
+            elseif r == "unavailable" then return "Unavailable"
+            elseif r == "none"     then return "Not attached yet"
+            else return tostring(r) end
+        end
+
+        E.loop("diagnostics", function()
+            if not (UI.current and UI.current.name == "Settings" and UI.panelOpen) then return 0.6 end
+            local A, S, F = E.aim, E.stats, E.fire
+            diagRoute.Text = fmtRoute(A and A.route or "none")
+            diagShots.Text = tostring((A and A.wrapperCalls) or 0)
+            local ls = A and A.leadStats
+            if E.cfg.exp.adaptiveLead and ls then
+                local best = 0
+                for i, arm in ipairs(ls.arms) do
+                    if arm.rate > (ls.arms[best] and ls.arms[best].rate or -1) then best = i end
+                end
+                local a = ls.arms[best]
+                diagLead.Text = a and string.format("scale %.2fx  hits %d / %d",
+                    a.scale, math.floor(a.hits + 0.5), math.floor(a.shots + 0.5)) or "learning"
+            else
+                diagLead.Text = "Off"
+            end
+            diagPlatform.Text = UI.isMobile and "Mobile (touch)" or "Desktop"
+            diagFire.Text = (F and F.mode) or "idle"
+
+            -- executor capability snapshot: what did E.X actually get, and
+            -- which higher-level features that costs. Surfaces WHY silent aim
+            -- or remote hooks are off on a weaker executor so users can pick
+            -- one that supports what they want.
+            local X = E.X or {}
+            local missing = {}
+            if not X.hookmetamethod   then missing[#missing + 1] = "hookmetamethod" end
+            if not X.getnamecallmethod then missing[#missing + 1] = "getnamecallmethod" end
+            if not X.checkcaller      then missing[#missing + 1] = "checkcaller" end
+            if not X.hookfunction     then missing[#missing + 1] = "hookfunction" end
+            if not X.writefile        then missing[#missing + 1] = "writefile" end
+            if not X.getconnections and not X.getgc then missing[#missing + 1] = "getgc/getconnections" end
+            diagExec.Text = (#missing == 0)
+                and "All required functions present"
+                or ("Missing: " .. table.concat(missing, ", "))
+            return 0.4
+        end)
     end
 end
 
@@ -5564,8 +8963,7 @@ do
         local t = E.aim and E.aim.target
         local p = t and t.player
         if p then
-            local dn = p.DisplayName
-            label = (type(dn) == "string" and dn ~= "") and dn or p.Name
+            label = E.nameOf(p, "Target")
             locked = true
         end
         local S = E.stats
@@ -5742,21 +9140,31 @@ do
         end
     end
 
+    local PRESS_STARTS = {
+        [Enum.UserInputType.MouseButton1] = true,
+        [Enum.UserInputType.Touch] = true,
+    }
+    local PRESS_MOVES = {
+        [Enum.UserInputType.MouseMovement] = true,
+        [Enum.UserInputType.Touch] = true,
+    }
     E.connect(hit.InputBegan, function(input)
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+        if not PRESS_STARTS[input.UserInputType] then return end
         if not (UI.clickable and minimisedShown and pill.Visible) then return end
         local o = pill.Position
         local origin = Vector2.new(o.X.Offset, o.Y.Offset)
-        press = { start = UI.mouse(), origin = origin, goal = origin, moved = false }
+        press = { start = UI.mouse(), origin = origin, goal = origin, moved = false, kind = input.UserInputType }
         Anim.to(pressScale, "Scale", 0.96, "press")
     end)
 
     E.connect(UIS.InputChanged, function(input)
-        if not press or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+        if not press or not PRESS_MOVES[input.UserInputType] then return end
         if not UI.clickable then endPress(false) return end
         local d = UI.mouse() - press.start
         if not press.moved then
-            if d.Magnitude <= 4 then return end
+            -- touch fingers wobble more than a mouse, so bump the deadzone
+            local slop = press.kind == Enum.UserInputType.Touch and 8 or 4
+            if d.Magnitude <= slop then return end
             press.moved = true
             Anim.to(pressScale, "Scale", 1.03, "hover")
         end
@@ -5765,7 +9173,11 @@ do
     end)
 
     E.connect(UIS.InputEnded, function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then endPress(true) end
+        if press and (input.UserInputType == press.kind
+            or input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            endPress(true)
+        end
     end)
 
     UI.onClickable(function(on)
@@ -5783,10 +9195,13 @@ do
         UI.setMinimised(true)
     end)
     UI.closeButton = UI.headerButton("i_close", -16, function()
-        if keyBound(E.cfg.keys.panel) then
+        -- Mobile has no keyboard, so a fully-closed window would be stranded;
+        -- always fall back to minimised there. Desktop keeps the old rule.
+        if UI.isMobile then
+            UI.setMinimised(true)
+        elseif keyBound(E.cfg.keys.panel) then
             UI.setOpen(false)
         else
-            -- with no panel key a closed window could never come back
             UI.setMinimised(true)
         end
     end)
@@ -5796,7 +9211,7 @@ do
     ------------------------------------------------------------------------
     -- A keybind capture consumes the same press that would trigger its
     -- action, so any press that lands within 0.3s of a key change is ignored.
-    local keyChangedAt = { panel = -1, silent = -1, esp = -1 }
+    local keyChangedAt = { panel = -1, silent = -1, esp = -1, autoFire = -1 }
     for name in pairs(keyChangedAt) do
         E.watch("keys." .. name, function() keyChangedAt[name] = os.clock() end)
     end
@@ -5823,6 +9238,7 @@ do
         end
         if keys.silent == keyName then flip("aim.silent", "Silent aim on", "Silent aim off") end
         if keys.esp == keyName then flip("esp.enabled", "ESP on", "ESP off") end
+        if keys.autoFire == keyName then flip("fire.auto", "Auto fire on", "Auto fire off") end
     end
 
     E.connect(UIS.InputBegan, function(input, gameProcessed)
@@ -5882,6 +9298,340 @@ do
     end)
 end
 
+-- ==== en_25_changelog.lua ====
+-- en_25_changelog: a "NEW" chip next to the header title and a popover that
+-- lists what changed since the last time the user saw the hub.
+--
+-- The chip only shows when cfg.ui.lastSeenVersion differs from E.version. The
+-- popover is parented to the panel screen, so it lives above the window and
+-- inherits the same Alt gate; on mobile the whole thing is tap-driven since
+-- UI.clickable is already forced true there.
+do
+    local T, Anim, UI = E.T, E.Anim, E.ui
+    local UIS = E.UIS
+    local new, text = UI.new, UI.text
+
+    ------------------------------------------------------------------------
+    -- Entries. Newest first. Every line is short enough to fit one row.
+    ------------------------------------------------------------------------
+    E.CHANGELOG = {
+        {
+            version = "2.2.0",
+            title = "True no-recoil, wider auto cone, opinionated defaults",
+            entries = {
+                "No recoil now actually stops the screen from moving. The game's recovery pull that used to yank your view down after firing is gone; camera stays exactly where you left it.",
+                "Auto fire cone now goes up to 60 degrees for wider tracking.",
+                "Defaults rebaked: silent aim FOV 30, max distance 3000, Violet accent, UI scale 1.2, panel key V, instant aim + adaptive lead on, clear weather on, ESP full. A fresh install lands on a working, opinionated setup.",
+                "Diagnostics section now names the executor functions that are missing, so you can tell why silent aim or remote hooks are off before hunting the wrong thing.",
+                "Broader executor compatibility. Every hard-required function is probed and features degrade gracefully; a light executor still gets ESP, prediction and the panel.",
+            },
+        },
+        {
+            version = "2.1.0",
+            title = "Mobile, stability, and a fresh coat of paint",
+            entries = {
+                "Mobile: full touch layout auto-detected. Bigger tap targets, no Alt gate, touch drag on the panel and the pill.",
+                "Auto fire waits for the target to settle inside the cone before it commits, so it stops firing bursts of one at the edge.",
+                "Silent aim keeps the last good aim point for a stutter so a dropped frame no longer wastes the shot.",
+                "New keybind: Auto fire toggle.",
+                "Changelog popover, which you are reading. It only shows when the version changes.",
+                "Close button on mobile always minimises to the pill, so a closed panel is never stranded.",
+            },
+        },
+        {
+            version = "2.0.0",
+            title = "Multi-part rebuild",
+            entries = {
+                "Rebuilt as numbered parts. Foundation, features, and the interface each own their own file.",
+                "Alt-gated cursor: the panel is clickable only while Left Alt is held so gunfire cannot flip its controls.",
+                "Adaptive lead learns your hits and misses and adjusts the prediction while you play.",
+                "ESP corners with health bars, off-screen pointers, chams, tracers and a compass radar.",
+            },
+        },
+    }
+
+    ------------------------------------------------------------------------
+    -- Chip in the header
+    ------------------------------------------------------------------------
+    local header = UI.header
+    if not header then return end
+
+    local chipW, chipH = 42, 20
+    local chip = new("Frame", {
+        Name = "ChangelogChip",
+        BackgroundColor3 = T.accent,
+        Size = UDim2.fromOffset(chipW, chipH),
+        Position = UDim2.fromOffset(150, UI.HEAD_H / 2 - chipH / 2),
+        ZIndex = 7,
+        Visible = false,
+    }, header)
+    UI.corner(chip, T.radius.pill)
+    UI.accent(chip, "BackgroundColor3")
+
+    local chipLabel = text(chip, "NEW", "small", {
+        Size = UDim2.fromScale(1, 1),
+        TextXAlignment = Enum.TextXAlignment.Center,
+        TextColor3 = T.base,
+        ZIndex = 8,
+    })
+    T.applyType(chipLabel, "small", 10)
+
+    -- an invisible tap-catcher covers the chip; the chip itself is a Frame so it
+    -- would swallow clicks. The catcher is a GuiButton so it can be Interactable.
+    local chipBtn = new("TextButton", {
+        BackgroundTransparency = 1,
+        AutoButtonColor = false,
+        Text = "",
+        Size = UDim2.fromScale(1, 1),
+        ZIndex = 9,
+    }, chip)
+
+    -- version chip already sits at 42 + titleW + 10; put NEW just to the right
+    -- of it. Measuring here matches the way en_20 laid out the version chip.
+    local titleW = math.ceil(T.measure("ENTRENCHED", "title").X)
+    chip.Position = UDim2.fromOffset(42 + titleW + 10 + 40 + 8, UI.HEAD_H / 2 - chipH / 2)
+
+    local function shouldShow()
+        return E.cfg.ui.lastSeenVersion ~= E.version
+    end
+
+    local function paintChip()
+        local on = shouldShow()
+        chip.Visible = on
+        if on then
+            -- a soft pulse to draw the eye when the panel first opens
+            Anim.set(chip, "Size", UDim2.fromOffset(chipW, chipH))
+            Anim.set(chipLabel, "TextTransparency", 0)
+        end
+    end
+    paintChip()
+    E.watch("ui.lastSeenVersion", paintChip)
+
+    ------------------------------------------------------------------------
+    -- Popover, built lazily on first open. Reads all entries, not just the
+    -- current version, so someone opening it any time can see history.
+    ------------------------------------------------------------------------
+    local popover, scrim, isOpen = nil, nil, false
+
+    local function build()
+        if popover then return end
+
+        scrim = new("TextButton", {
+            Name = "ChangelogScrim",
+            BackgroundColor3 = T.black,
+            BackgroundTransparency = 1,
+            AutoButtonColor = false,
+            Text = "",
+            Size = UDim2.fromScale(1, 1),
+            ZIndex = 220,
+            Visible = false,
+        }, UI.panelScreen)
+
+        popover = new("Frame", {
+            Name = "ChangelogPopover",
+            BackgroundColor3 = T.base,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(420, 340),
+            ZIndex = 221,
+            Visible = false,
+        }, UI.panelScreen)
+        UI.corner(popover, T.radius.lg)
+        UI.rim(popover, 230, 0.2)
+        UI.shadow(popover, true, true, 219)
+
+        local head = new("Frame", {
+            BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 44),
+            ZIndex = 222,
+        }, popover)
+        local mark = new("Frame", {
+            BackgroundColor3 = T.accent,
+            AnchorPoint = Vector2.new(0, 0.5),
+            Position = UDim2.new(0, 16, 0.5, 0),
+            Size = UDim2.fromOffset(8, 8),
+            Rotation = 45,
+            ZIndex = 223,
+        }, head)
+        UI.corner(mark, 2)
+        UI.accent(mark, "BackgroundColor3")
+
+        text(head, "WHAT'S NEW", "heading", {
+            Position = UDim2.fromOffset(32, 0),
+            Size = UDim2.new(1, -80, 1, 0),
+            TextColor3 = T.text,
+            ZIndex = 223,
+        })
+        text(head, "v" .. E.version, "small", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -46, 0.5, 0),
+            Size = UDim2.fromOffset(40, 20),
+            TextXAlignment = Enum.TextXAlignment.Right,
+            TextColor3 = T.dim,
+            ZIndex = 223,
+        })
+
+        local closeBtn = new("TextButton", {
+            Name = "Close",
+            BackgroundTransparency = 1,
+            AutoButtonColor = false,
+            Text = "",
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -12, 0.5, 0),
+            Size = UDim2.fromOffset(24, 24),
+            ZIndex = 224,
+        }, head)
+        local closeIcon = UI.icon(closeBtn, "i_close", 12, T.dim, {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0.5, 0.5),
+            ZIndex = 225,
+        })
+        UI.hoverable(closeBtn, {
+            enter = function() Anim.to(closeIcon, "ImageColor3", T.text, "hover") end,
+            leave = function() Anim.to(closeIcon, "ImageColor3", T.dim, "hover") end,
+        })
+
+        local scroll = new("ScrollingFrame", {
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(0, 44),
+            Size = UDim2.new(1, 0, 1, -56),
+            CanvasSize = UDim2.new(),
+            ScrollBarThickness = 3,
+            ScrollBarImageColor3 = T.track,
+            ScrollingDirection = Enum.ScrollingDirection.Y,
+            ZIndex = 222,
+        }, popover)
+        local layout = new("UIListLayout", {
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            Padding = UDim.new(0, 6),
+        }, scroll)
+        new("UIPadding", {
+            PaddingLeft = UDim.new(0, 20),
+            PaddingRight = UDim.new(0, 20),
+            PaddingTop = UDim.new(0, 4),
+            PaddingBottom = UDim.new(0, 14),
+        }, scroll)
+
+        local textW = 420 - 40
+        for i, entry in ipairs(E.CHANGELOG) do
+            local titleH = math.max(math.ceil(T.measure(entry.title, "label", textW - 60).Y), 18)
+            local sec = new("Frame", {
+                BackgroundTransparency = 1,
+                Size = UDim2.new(1, 0, 0, titleH + 4),
+                LayoutOrder = i * 100,
+                ZIndex = 222,
+            }, scroll)
+            local badge = new("Frame", {
+                BackgroundColor3 = T.raised,
+                Position = UDim2.fromOffset(0, 2),
+                Size = UDim2.fromOffset(48, 18),
+                ZIndex = 223,
+            }, sec)
+            UI.corner(badge, T.radius.pill)
+            text(badge, "v" .. entry.version, "small", {
+                Size = UDim2.fromScale(1, 1),
+                TextXAlignment = Enum.TextXAlignment.Center,
+                TextColor3 = T.dim,
+                ZIndex = 224,
+            })
+            text(sec, entry.title, "label", {
+                Position = UDim2.fromOffset(58, 0),
+                Size = UDim2.fromOffset(textW - 58, titleH + 4),
+                TextColor3 = T.text,
+                TextWrapped = true,
+                TextYAlignment = Enum.TextYAlignment.Top,
+                ZIndex = 223,
+            })
+
+            for j, line in ipairs(entry.entries) do
+                local lh = math.max(math.ceil(T.measure(line, "body", textW - 20).Y), 14) + 4
+                local row = new("Frame", {
+                    BackgroundTransparency = 1,
+                    Size = UDim2.new(1, 0, 0, lh + 2),
+                    LayoutOrder = i * 100 + j,
+                    ZIndex = 222,
+                }, scroll)
+                local dot = new("Frame", {
+                    BackgroundColor3 = T.accent,
+                    AnchorPoint = Vector2.new(0, 0.5),
+                    Position = UDim2.new(0, 4, 0, 8),
+                    Size = UDim2.fromOffset(4, 4),
+                    ZIndex = 223,
+                }, row)
+                UI.corner(dot, T.radius.pill)
+                UI.accent(dot, "BackgroundColor3")
+                text(row, line, "body", {
+                    Position = UDim2.fromOffset(18, 0),
+                    Size = UDim2.new(1, -22, 1, 0),
+                    TextColor3 = T.dim,
+                    TextWrapped = true,
+                    TextYAlignment = Enum.TextYAlignment.Top,
+                    ZIndex = 223,
+                })
+            end
+
+            local spacer = new("Frame", {
+                BackgroundTransparency = 1,
+                Size = UDim2.new(1, 0, 0, 8),
+                LayoutOrder = i * 100 + 99,
+                ZIndex = 222,
+            }, scroll)
+        end
+
+        layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            local s = UI.scaleObj and UI.scaleObj.Scale or 1
+            scroll.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y / math.max(s, 0.01) + 24)
+        end)
+
+        local function close()
+            if not isOpen then return end
+            isOpen = false
+            Anim.to(scrim, "BackgroundTransparency", 1, "fade")
+            Anim.to(popover, "Size", UDim2.fromOffset(400, 320), "collapse")
+            task.delay(0.24, function()
+                if E.alive and not isOpen then
+                    scrim.Visible = false
+                    popover.Visible = false
+                end
+            end)
+            if shouldShow() then
+                E.set("ui.lastSeenVersion", E.version)
+            end
+        end
+
+        closeBtn.Activated:Connect(function() if UI.clickable then close() end end)
+        scrim.Activated:Connect(function() if UI.clickable then close() end end)
+        UI.close = close
+    end
+
+    local function open()
+        if isOpen then return end
+        build()
+        isOpen = true
+        scrim.BackgroundTransparency = 1
+        scrim.Visible = true
+        popover.Visible = true
+        Anim.set(popover, "Size", UDim2.fromOffset(400, 320))
+        Anim.to(scrim, "BackgroundTransparency", 0.55, "fade")
+        Anim.to(popover, "Size", UDim2.fromOffset(420, 340), "panel")
+    end
+    UI.showChangelog = open
+
+    chipBtn.Activated:Connect(function()
+        if UI.clickable then open() end
+    end)
+    UI.hoverable(chip, {
+        enter = function() Anim.to(chip, "Size", UDim2.fromOffset(chipW + 4, chipH + 2), "hover") end,
+        leave = function() Anim.to(chip, "Size", UDim2.fromOffset(chipW, chipH), "hover") end,
+    })
+
+    -- open once, briefly, when the panel first shows on a new version. On
+    -- mobile the panel starts minimised often, so wait until it's on screen.
+    task.delay(1.6, function()
+        if E.alive and shouldShow() and UI.panelOpen then open() end
+    end)
+end
+
 -- ==== en_99_start.lua ====
 -- en_99_start: runs last, once every part exists.
 do
@@ -5896,6 +9646,13 @@ do
     -- restored settings only take effect once their watchers fire
     E.replay()
 
+    -- Mobile default: turn on the game's own bullet magnetism if the user
+    -- opted in through the Mobile section. Runs once so a later manual "off"
+    -- is respected on the next load.
+    if UI.isMobile and E.cfg.mobile.magnetism and not E.cfg.exp.magnetism then
+        E.set("exp.magnetism", true)
+    end
+
     if E.cfg.ui.minimised and UI.setMinimised then
         UI.setMinimised(true)
     elseif UI.setOpen then
@@ -5907,7 +9664,10 @@ do
         if E.toast then
             local key = E.cfg.keys.panel
             local keyText = (key == "None" or key == "") and "" or ("  " .. key .. " shows or hides the panel.")
-            E.toast("Entrenched is ready", "When the cursor is locked, hold Left Alt to click." .. keyText, "info")
+            local hint = UI.isMobile
+                and ("Tap anywhere on the panel to interact." .. keyText)
+                or ("When the cursor is locked, hold Left Alt to click." .. keyText)
+            E.toast("Entrenched v" .. E.version .. " is ready", hint, "info")
         end
     end)
 
