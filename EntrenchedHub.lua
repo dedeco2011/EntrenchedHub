@@ -51,7 +51,7 @@ do
     end
 
     E.G       = G          -- the executor's shared environment, captured once
-    E.version = "2.2.1"
+    E.version = "2.3.0"
     E.alive   = true
     E.faults  = {}
     E.cap     = {}
@@ -9388,6 +9388,16 @@ do
     ------------------------------------------------------------------------
     E.CHANGELOG = {
         {
+            version = "2.3.0",
+            title = "Live tab",
+            entries = {
+                "New Live tab: total users all-time, and how many are on right now.",
+                "Backed by a public anonymous counter. No account, no personal data. Every session bumps the total once and heartbeats every 15 seconds while the hub is active.",
+                "\"Live now\" is the previous full minute of heartbeats, matching how status pages define \"online\".",
+                "Fixed the Clear View damage tint flicker: the game's per-frame tween of healthColor is now suppressed on the same frame instead of every half second.",
+            },
+        },
+        {
             version = "2.2.0",
             title = "True no-recoil, wider auto cone, opinionated defaults",
             entries = {
@@ -9701,6 +9711,231 @@ do
     -- mobile the panel starts minimised often, so wait until it's on screen.
     task.delay(1.6, function()
         if E.alive and shouldShow() and UI.panelOpen then open() end
+    end)
+end
+
+-- ==== en_26_liveusers.lua ====
+-- en_26_liveusers: Live tab. Total users ever executed + how many are on right now.
+--
+-- Backend is abacus.jasoncameron.dev, an open public atomic counter. No signup,
+-- no keys, no PII. Each session sends exactly two kinds of HTTP requests:
+--   1. On the FIRST load in this executor session, GET /hit/{ns}/total once.
+--      Re-executes in the same session are gated behind a getgenv() flag.
+--   2. Every HB_SECS seconds, GET /hit/{ns}/alive-<minute>, where <minute> is
+--      the current UTC minute. Each minute is its own bucket.
+--
+-- Live count = value of the LAST FULL minute's alive-bucket, divided by the
+-- number of heartbeats one session sends per minute. So "live" means "sessions
+-- that heartbeated during the previous minute", which matches how discords and
+-- SaaS status pages define "online now".
+--
+-- If the network is blocked or the service is down, tiles show 0 and the
+-- status line names the error. The tab still renders.
+do
+    local T, UI = E.T, E.ui
+    local new, text = UI.new, UI.text
+    local Http = E.HttpService
+
+    local ENDPOINT   = "https://abacus.jasoncameron.dev"
+    local NAMESPACE  = "entrenchedhub"
+    local HB_SECS    = 15         -- heartbeat cadence
+    local PER_MIN    = 60 / HB_SECS
+
+    local LIVE = {
+        total = -1, live = -1, lastErr = nil, lastAt = 0, firstFetch = false,
+    }
+    E.live = LIVE
+
+    -- Roblox's os.time() returns UTC unix seconds; bucket key is stable across
+    -- clients regardless of local timezone.
+    local function currentMinute() return math.floor(os.time() / 60) end
+
+    -- abacus returns an empty body for a counter that has never been hit; that
+    -- means "value is zero", not an error. Distinguish this from real failures.
+    local EMPTY = { empty = true }
+    local function get(url)
+        local ok, resp = pcall(function() return game:HttpGet(url, true) end)
+        if not ok then return nil, tostring(resp) end
+        if type(resp) ~= "string" or resp:match("^%s*$") then return EMPTY end
+        local ok2, data = pcall(function() return Http:JSONDecode(resp) end)
+        if not ok2 then return nil, tostring(data) end
+        return data
+    end
+
+    ------------------------------------------------------------------------
+    -- Total counter: one increment per NEW executor session. If the user
+    -- re-executes the loader in the same session, the pinned flag skips it.
+    ------------------------------------------------------------------------
+    local G = E.G
+    if rawget(G, "__ENT_COUNTED_TOTAL") ~= true then
+        G.__ENT_COUNTED_TOTAL = true
+        task.spawn(function()
+            local data, err = get(ENDPOINT .. "/hit/" .. NAMESPACE .. "/total")
+            if data and type(data.value) == "number" then
+                LIVE.total = data.value
+            else
+                LIVE.lastErr = err or "unknown response"
+            end
+        end)
+    end
+
+    ------------------------------------------------------------------------
+    -- Heartbeat: every HB_SECS, hit alive-<currentMinute>. task.spawn keeps
+    -- the HTTP call off the loop's own timing so a slow network never freezes
+    -- the cadence.
+    ------------------------------------------------------------------------
+    E.loop("liveusers heartbeat", function()
+        if not E.alive then return 1 end
+        task.spawn(function()
+            local minute = currentMinute()
+            local _, err = get(ENDPOINT .. "/hit/" .. NAMESPACE .. "/alive-" .. minute)
+            if err then LIVE.lastErr = err end
+        end)
+        return HB_SECS
+    end)
+
+    ------------------------------------------------------------------------
+    -- Read pass: pull last full minute's alive count and the total.
+    ------------------------------------------------------------------------
+    local function refresh()
+        task.spawn(function()
+            -- last COMPLETED minute, not the currently-filling one
+            local minute = currentMinute() - 1
+            local data, err = get(ENDPOINT .. "/get/" .. NAMESPACE .. "/alive-" .. minute)
+            if data == EMPTY then
+                -- nobody heartbeated last minute, counter was never created
+                LIVE.live = 0
+                LIVE.lastErr = nil
+            elseif data and type(data.value) == "number" then
+                local raw = data.value
+                -- each session sends PER_MIN heartbeats per minute; divide.
+                -- ceil so 1 heartbeat rounds up to 1 user, not 0.
+                LIVE.live = math.max(0, math.ceil(raw / PER_MIN))
+                LIVE.lastErr = nil
+            elseif err then
+                LIVE.lastErr = err
+            end
+            LIVE.lastAt = os.clock()
+            LIVE.firstFetch = true
+        end)
+        task.spawn(function()
+            local data, err = get(ENDPOINT .. "/get/" .. NAMESPACE .. "/total")
+            if data == EMPTY then LIVE.total = 0
+            elseif data and type(data.value) == "number" then LIVE.total = data.value
+            elseif err then LIVE.lastErr = err end
+        end)
+    end
+    LIVE.refresh = refresh
+    task.delay(0.4, refresh)
+
+    ------------------------------------------------------------------------
+    -- Tab
+    ------------------------------------------------------------------------
+    local live = UI.addTab("Live", "i_stats")
+
+    local users = UI.section(live, "Anonymous counters",
+        "Every session bumps the total once and heartbeats every " .. HB_SECS
+        .. " seconds. Live counts are the last full minute of heartbeats. No account, no personal data.")
+
+    local gridRow = users.addRow(140)
+    local grid = new("Frame", {
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(16, 4),
+        Size = UDim2.new(1, -32, 1, -8),
+        ZIndex = 9,
+    }, gridRow)
+    new("UIGridLayout", {
+        CellSize = UDim2.new(0.5, -6, 0, 120),
+        CellPadding = UDim2.fromOffset(9, 9),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, grid)
+
+    local function tile(label, sub, order, color)
+        local t = new("Frame", {
+            BackgroundColor3 = T.raised, LayoutOrder = order, ZIndex = 10,
+        }, grid)
+        UI.corner(t, T.radius.md)
+        local dot = new("Frame", {
+            BackgroundColor3 = color,
+            AnchorPoint = Vector2.new(0, 0.5),
+            Position = UDim2.fromOffset(16, 22),
+            Size = UDim2.fromOffset(6, 6),
+            ZIndex = 12,
+        }, t)
+        UI.corner(dot, T.radius.pill)
+        text(t, string.upper(label), "heading", {
+            Position = UDim2.fromOffset(28, 14),
+            Size = UDim2.new(1, -44, 0, 16),
+            TextColor3 = T.mute,
+            ZIndex = 11,
+        })
+        local holder = new("Frame", {
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(16, 42),
+            Size = UDim2.new(1, -32, 0, 40),
+            ZIndex = 11,
+        }, t)
+        local counter = UI.counter(holder, "digits", T.text, 0, nil)
+        text(t, sub, "small", {
+            Position = UDim2.fromOffset(16, 90),
+            Size = UDim2.new(1, -32, 0, 16),
+            TextColor3 = T.dim,
+            TextWrapped = true,
+            TextYAlignment = Enum.TextYAlignment.Top,
+            ZIndex = 11,
+        })
+        return counter
+    end
+
+    local totalTile = tile("Total users", "All-time load count", 1, T.dim)
+    local liveTile  = tile("Live now",    "Active in the last minute", 2, T.good)
+    -- accent-repaint live dot when accent changes
+    -- (kept green to signal "live", not accent, so unchanged)
+
+    local info = UI.section(live, "Details")
+    local statusRow = UI.row(info, "Last update", nil, 260)
+    local statusText = text(statusRow, "Fetching...", "value", {
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -16, 0, 0),
+        Size = UDim2.fromOffset(320, T.row),
+        TextXAlignment = Enum.TextXAlignment.Right,
+        TextColor3 = T.dim,
+        ZIndex = 10,
+    })
+    T.applyType(statusText, "value")
+
+    UI.button(info, "Refresh now", "Fetch", function() refresh() end)
+
+    UI.note(info, "Counter is provided by abacus.jasoncameron.dev, a public atomic counter. Only the counter name is sent; no username, script data or IP is stored beyond the service's own request logs.")
+
+    ------------------------------------------------------------------------
+    -- Display loop: writes tile values and the status line while the tab
+    -- is on screen. Autorefresh only fires when the panel is open on Live.
+    ------------------------------------------------------------------------
+    E.loop("liveusers display", function()
+        if not (UI.current and UI.current.name == "Live" and UI.panelOpen) then return 0.8 end
+        if LIVE.total >= 0 then totalTile.set(LIVE.total) end
+        if LIVE.live >= 0 then liveTile.set(LIVE.live) end
+        if LIVE.lastErr then
+            statusText.Text = "Error: " .. string.sub(tostring(LIVE.lastErr), 1, 64)
+            statusText.TextColor3 = T.bad
+        elseif LIVE.firstFetch then
+            local since = math.max(0, math.floor(os.clock() - LIVE.lastAt))
+            statusText.Text = since .. " s ago"
+            statusText.TextColor3 = T.dim
+        else
+            statusText.Text = "Fetching..."
+            statusText.TextColor3 = T.dim
+        end
+        return 0.5
+    end)
+
+    E.loop("liveusers autorefresh", function()
+        if UI.current and UI.current.name == "Live" and UI.panelOpen then
+            refresh()
+            return 10
+        end
+        return 4
     end)
 end
 
