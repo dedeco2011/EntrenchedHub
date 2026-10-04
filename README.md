@@ -5,7 +5,7 @@ A client side aim, ESP and firing hub for the Roblox game **ENTRENCHED** (place 
 ## Load
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/Mrzaytoon/EntrenchedHub/main/EntrenchedHub.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/dedeco2011/EntrenchedHub/main/EntrenchedHub.lua"))()
 ```
 
 Click the panel normally whenever your cursor is free. When the game locks the cursor (first person, aiming, shift lock), **hold Left Alt** to free it and click. The cursor is only released while Alt is held, so mouse look and shift lock are never taken away mid fight, and a shot fired under a locked cursor never clicks the panel. **Right Shift** shows and hides the panel by default, and the key can be changed in Settings. The minimise button collapses it to a small bar with your locked target, kills and headshot rate.
